@@ -6,10 +6,15 @@ export const erasurePolicies = {
   Session: 'DELETE',
   WebhookSubscription: 'DELETE',
   AlertRule: 'DELETE',
+  EmailIdentity: 'DELETE',
+  UserWebhookEndpoint: 'DELETE',
+  UserApiKey: 'DELETE',
+  RecurringDepositPlan: 'DELETE',
   Transaction: 'ANONYMIZE',
   CostBasisLot: 'ANONYMIZE',
   FiatOrder: 'ANONYMIZE',
   ReferralConversion: 'ANONYMIZE',
+  User: 'ANONYMIZE',
   AuditBlock: 'IMMUTABLE',
   OutboxOp: 'IMMUTABLE',
 } as const
@@ -39,20 +44,15 @@ export async function erasureJob(
         const query = { userId }
         if (dryRun) {
           count = await db.session.count({ where: query })
-          results.push({
-            model: 'Session',
-            action: 'delete' as const,
-            count,
-          })
         } else {
           const result = await db.session.deleteMany({ where: query })
           count = result.count
-          results.push({
-            model: 'Session',
-            action: 'delete' as const,
-            count,
-          })
         }
+        results.push({
+          model: 'Session',
+          action: 'delete' as const,
+          count,
+        })
         break
       }
 
@@ -60,22 +60,17 @@ export async function erasureJob(
         const query = { userId }
         if (dryRun) {
           count = await db.webhookSubscription.count({ where: query })
-          results.push({
-            model: 'WebhookSubscription',
-            action: 'delete' as const,
-            count,
-          })
         } else {
           const result = await db.webhookSubscription.deleteMany({
             where: query,
           })
           count = result.count
-          results.push({
-            model: 'WebhookSubscription',
-            action: 'delete' as const,
-            count,
-          })
         }
+        results.push({
+          model: 'WebhookSubscription',
+          action: 'delete' as const,
+          count,
+        })
         break
       }
 
@@ -83,20 +78,83 @@ export async function erasureJob(
         const query = { userId }
         if (dryRun) {
           count = await db.alertRule.count({ where: query })
-          results.push({
-            model: 'AlertRule',
-            action: 'delete' as const,
-            count,
-          })
         } else {
           const result = await db.alertRule.deleteMany({ where: query })
           count = result.count
-          results.push({
-            model: 'AlertRule',
-            action: 'delete' as const,
-            count,
-          })
         }
+        results.push({
+          model: 'AlertRule',
+          action: 'delete' as const,
+          count,
+        })
+        break
+      }
+
+      case 'EmailIdentity': {
+        const query = { userId }
+        if (dryRun) {
+          count = await db.emailIdentity.count({ where: query })
+        } else {
+          const result = await db.emailIdentity.deleteMany({ where: query })
+          count = result.count
+        }
+        results.push({
+          model: 'EmailIdentity',
+          action: 'delete' as const,
+          count,
+        })
+        break
+      }
+
+      case 'UserWebhookEndpoint': {
+        const query = { userId }
+        if (dryRun) {
+          count = await db.userWebhookEndpoint.count({ where: query })
+        } else {
+          const result = await db.userWebhookEndpoint.deleteMany({
+            where: query,
+          })
+          count = result.count
+        }
+        results.push({
+          model: 'UserWebhookEndpoint',
+          action: 'delete' as const,
+          count,
+        })
+        break
+      }
+
+      case 'UserApiKey': {
+        const query = { userId }
+        if (dryRun) {
+          count = await db.userApiKey.count({ where: query })
+        } else {
+          const result = await db.userApiKey.deleteMany({ where: query })
+          count = result.count
+        }
+        results.push({
+          model: 'UserApiKey',
+          action: 'delete' as const,
+          count,
+        })
+        break
+      }
+
+      case 'RecurringDepositPlan': {
+        const query = { userId }
+        if (dryRun) {
+          count = await db.recurringDepositPlan.count({ where: query })
+        } else {
+          const result = await db.recurringDepositPlan.deleteMany({
+            where: query,
+          })
+          count = result.count
+        }
+        results.push({
+          model: 'RecurringDepositPlan',
+          action: 'delete' as const,
+          count,
+        })
         break
       }
 
@@ -104,13 +162,8 @@ export async function erasureJob(
         const query = { userId }
         if (dryRun) {
           count = await db.transaction.count({ where: query })
-          // Anonymize: remove userId and set actingAsUserId to null
-          results.push({
-            model: 'Transaction',
-            action: 'anonymize' as const,
-            count,
-          })
         } else {
+          count = await db.transaction.count({ where: query })
           await db.transaction.updateMany({
             where: { userId },
             data: {
@@ -118,13 +171,12 @@ export async function erasureJob(
               selectedLotIds: [],
             },
           })
-          count = 0 // Cannot easily count after update, use original count
-          results.push({
-            model: 'Transaction',
-            action: 'anonymize' as const,
-            count: count,
-          })
         }
+        results.push({
+          model: 'Transaction',
+          action: 'anonymize' as const,
+          count,
+        })
         break
       }
 
@@ -132,23 +184,18 @@ export async function erasureJob(
         const query = { userId }
         if (dryRun) {
           count = await db.costBasisLot.count({ where: query })
-          results.push({
-            model: 'CostBasisLot',
-            action: 'anonymize' as const,
-            count,
-          })
         } else {
+          count = await db.costBasisLot.count({ where: query })
           await db.costBasisLot.updateMany({
             where: { userId },
             data: { acquisitionPrice: null, priceSource: null },
           })
-          count = 0
-          results.push({
-            model: 'CostBasisLot',
-            action: 'anonymize' as const,
-            count: count,
-          })
         }
+        results.push({
+          model: 'CostBasisLot',
+          action: 'anonymize' as const,
+          count,
+        })
         break
       }
 
@@ -156,12 +203,8 @@ export async function erasureJob(
         const query = { userId }
         if (dryRun) {
           count = await db.fiatOrder.count({ where: query })
-          results.push({
-            model: 'FiatOrder',
-            action: 'anonymize' as const,
-            count,
-          })
         } else {
+          count = await db.fiatOrder.count({ where: query })
           await db.fiatOrder.updateMany({
             where: { userId },
             data: {
@@ -173,13 +216,12 @@ export async function erasureJob(
               settledCryptoAmount: null,
             },
           })
-          count = 0
-          results.push({
-            model: 'FiatOrder',
-            action: 'anonymize' as const,
-            count: count,
-          })
         }
+        results.push({
+          model: 'FiatOrder',
+          action: 'anonymize' as const,
+          count,
+        })
         break
       }
 
@@ -187,12 +229,8 @@ export async function erasureJob(
         const query = { referredUserId: userId }
         if (dryRun) {
           count = await db.referralConversion.count({ where: query })
-          results.push({
-            model: 'ReferralConversion',
-            action: 'anonymize' as const,
-            count,
-          })
         } else {
+          count = await db.referralConversion.count({ where: query })
           await db.referralConversion.updateMany({
             where: { referredUserId: userId },
             data: {
@@ -203,19 +241,38 @@ export async function erasureJob(
               reviewDecision: null,
             },
           })
-          count = 0
-          results.push({
-            model: 'ReferralConversion',
-            action: 'anonymize' as const,
-            count: count,
+        }
+        results.push({
+          model: 'ReferralConversion',
+          action: 'anonymize' as const,
+          count,
+        })
+        break
+      }
+
+      case 'User': {
+        if (dryRun) {
+          count = await db.user.count({ where: { id: userId } })
+        } else {
+          count = await db.user.count({ where: { id: userId } })
+          await db.user.updateMany({
+            where: { id: userId },
+            data: {
+              email: null,
+              phone: null,
+            },
           })
         }
+        results.push({
+          model: 'User',
+          action: 'anonymize' as const,
+          count,
+        })
         break
       }
 
       case 'AuditBlock':
       case 'OutboxOp':
-        // IMMUTABLE - leave untouched
         results.push({
           model: modelName,
           action: 'immutable' as const,

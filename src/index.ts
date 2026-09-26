@@ -242,7 +242,7 @@ const UNVERSIONED_SUNSET = new Date(
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
 let swaggerSpec: Record<string, unknown> | null = null
-const specPath = path.join(process.cwd(), 'docs', 'openapi.yaml')
+const specPath = path.join(__dirname, 'docs', 'openapi.yaml')
 
 try {
   const specFile = fs.readFileSync(specPath, 'utf8')

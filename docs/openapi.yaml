@@ -42,6 +42,10 @@ tags:
       HTTP request and is spec'd here so generated clients know how to open it;
       everything after the 101 is the JSON subprotocol described in the
       `WebSocket*` schemas and in docs/WEBSOCKET_STREAMING.md.
+  - name: Alerts
+    description: Alert rules and monitoring triggers (#366)
+  - name: Webhooks
+    description: User-scoped outbound webhook endpoints (#368)
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -927,6 +931,94 @@ components:
         - $ref: '#/components/schemas/WebSocketError'
         - $ref: '#/components/schemas/WebSocketDraining'
         - $ref: '#/components/schemas/WebSocketPong'
+
+    AlertRule:
+      type: object
+      description: Alert rule for monitoring portfolio metrics and protocol APY.
+      required: [id, userId, metric, comparator, threshold, deliveryChannel, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique alert rule ID.
+        userId:
+          type: string
+          description: Owner of the alert rule.
+        metric:
+          type: string
+          enum: [PROTOCOL_APY, PORTFOLIO_VALUE]
+          description: Metric to monitor.
+        protocolName:
+          type: string
+          nullable: true
+          description: Protocol name for PROTOCOL_APY metrics; null for portfolio-level metrics.
+        comparator:
+          type: string
+          enum: [LT, GT, EQ]
+          description: Comparison operator for the threshold.
+        threshold:
+          type: string
+          description: Threshold value as a decimal string to avoid float precision loss.
+        deliveryChannel:
+          type: string
+          enum: [WEBHOOK, TELEGRAM, WHATSAPP, EMAIL]
+          description: Notification delivery channel.
+        cooldownMinutes:
+          type: integer
+          description: Minimum minutes between alert fires for the same rule.
+        lastFiredAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last alert fire.
+        isActive:
+          type: boolean
+          description: Whether the alert rule is enabled.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UserWebhookEndpoint:
+      type: object
+      description: User-scoped outbound webhook endpoint for real-time event delivery.
+      required: [id, userId, url, events, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique endpoint ID.
+        userId:
+          type: string
+          description: Owner of the webhook endpoint.
+        url:
+          type: string
+          format: uri
+          description: HTTPS callback URL (must not be localhost or private IP).
+        events:
+          type: array
+          items:
+            type: string
+          description: Event types to subscribe to (e.g., "transaction.completed", "rebalance.executed").
+        topicScope:
+          type: string
+          nullable: true
+          description: Optional topic filter for event scope.
+        filterJson:
+          type: object
+          nullable: true
+          description: Optional JSON filter for matching events.
+        isActive:
+          type: boolean
+          description: Whether the endpoint is enabled.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
 
   responses:
     Unauthorized:
@@ -2143,6 +2235,466 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnauthorizedError'
+
+  # ── Alert rules (#366) ────────────────────────────────────────────────────────
+
+  /alerts:
+    post:
+      operationId: createAlertRule
+      summary: Create a new alert rule
+      description: |
+        Create an alert rule to monitor a portfolio metric or protocol APY.
+        Requires `alerts:manage` scope.
+      tags: [Alerts]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metric, comparator, threshold, deliveryChannel]
+              properties:
+                metric:
+                  type: string
+                  enum: [PROTOCOL_APY, PORTFOLIO_VALUE]
+                protocolName:
+                  type: string
+                  nullable: true
+                  description: Required when metric is PROTOCOL_APY.
+                comparator:
+                  type: string
+                  enum: [LT, GT, EQ]
+                threshold:
+                  type: string
+                  description: Threshold as decimal string.
+                deliveryChannel:
+                  type: string
+                  enum: [WEBHOOK, TELEGRAM, WHATSAPP, EMAIL]
+                cooldownMinutes:
+                  type: integer
+                  description: Minutes between alert fires (default 60).
+      responses:
+        '201':
+          description: Alert rule created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          description: Validation failed.
+        '401':
+          description: Missing/invalid bearer token or insufficient scope.
+
+  /alerts/{userId}:
+    get:
+      operationId: listAlertRules
+      summary: List alert rules for a user
+      description: Owner-scoped — caller may only list their own rules.
+      tags: [Alerts]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          description: User ID (must match authenticated user).
+      responses:
+        '200':
+          description: List of alert rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AlertRule'
+        '401':
+          description: Missing/invalid bearer token or access denied.
+        '403':
+          description: Not the owner of the requested user ID.
+
+  /alerts/{id}:
+    patch:
+      operationId: updateAlertRule
+      summary: Update an alert rule
+      description: Requires `alerts:manage` scope.
+      tags: [Alerts]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Alert rule ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                metric:
+                  type: string
+                  enum: [PROTOCOL_APY, PORTFOLIO_VALUE]
+                protocolName:
+                  type: string
+                  nullable: true
+                comparator:
+                  type: string
+                  enum: [LT, GT, EQ]
+                threshold:
+                  type: string
+                deliveryChannel:
+                  type: string
+                  enum: [WEBHOOK, TELEGRAM, WHATSAPP, EMAIL]
+                cooldownMinutes:
+                  type: integer
+                isActive:
+                  type: boolean
+      responses:
+        '200':
+          description: Alert rule updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          description: Validation failed.
+        '401':
+          description: Missing/invalid bearer token or insufficient scope.
+        '404':
+          description: Alert rule not found.
+
+    delete:
+      operationId: deleteAlertRule
+      summary: Delete an alert rule
+      description: Requires `alerts:manage` scope.
+      tags: [Alerts]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Alert rule ID.
+      responses:
+        '204':
+          description: Alert rule deleted.
+        '401':
+          description: Missing/invalid bearer token or insufficient scope.
+        '404':
+          description: Alert rule not found.
+
+  # ── User webhook endpoints (#368) ──────────────────────────────────────────
+
+  /webhooks/endpoints:
+    post:
+      operationId: createWebhookEndpoint
+      summary: Create a user webhook endpoint
+      description: |
+        Create a new outbound webhook endpoint for real-time event delivery.
+        URL must be HTTPS and not point to localhost or private addresses.
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, events]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS callback URL.
+                events:
+                  type: array
+                  items:
+                    type: string
+                  description: Event types to subscribe to.
+                topicScope:
+                  type: string
+                  nullable: true
+                filterJson:
+                  type: object
+                  nullable: true
+      responses:
+        '201':
+          description: Webhook endpoint created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/UserWebhookEndpoint'
+                  - type: object
+                    properties:
+                      secret:
+                        type: string
+                        description: Signing secret (returned once; store securely).
+        '400':
+          description: Validation failed or invalid URL.
+        '401':
+          description: Missing/invalid bearer token.
+
+    get:
+      operationId: listWebhookEndpoints
+      summary: List user webhook endpoints
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of webhook endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserWebhookEndpoint'
+        '401':
+          description: Missing/invalid bearer token.
+
+  /webhooks/endpoints/{id}:
+    get:
+      operationId: getWebhookEndpoint
+      summary: Get a webhook endpoint
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook endpoint ID.
+      responses:
+        '200':
+          description: Webhook endpoint details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserWebhookEndpoint'
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Webhook endpoint not found.
+
+    patch:
+      operationId: updateWebhookEndpoint
+      summary: Update a webhook endpoint
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook endpoint ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                events:
+                  type: array
+                  items:
+                    type: string
+                topicScope:
+                  type: string
+                  nullable: true
+                filterJson:
+                  type: object
+                  nullable: true
+                isActive:
+                  type: boolean
+      responses:
+        '200':
+          description: Webhook endpoint updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserWebhookEndpoint'
+        '400':
+          description: Validation failed.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Webhook endpoint not found.
+
+    delete:
+      operationId: deleteWebhookEndpoint
+      summary: Delete a webhook endpoint
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook endpoint ID.
+      responses:
+        '204':
+          description: Webhook endpoint deleted.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Webhook endpoint not found.
+
+  /webhooks/endpoints/{id}/rotate-secret:
+    post:
+      operationId: rotateWebhookSecret
+      summary: Rotate webhook endpoint secret
+      description: |
+        Begin secret rotation with dual-signing period. Returns new secret and
+        activation time. Old secret remains valid until activation time.
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook endpoint ID.
+      responses:
+        '200':
+          description: Secret rotation initiated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secretNext:
+                    type: string
+                    description: New secret (store securely).
+                  secretNextActiveAt:
+                    type: string
+                    format: date-time
+                    description: When new secret becomes active.
+                  message:
+                    type: string
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Webhook endpoint not found.
+
+  /webhooks/endpoints/{id}/test:
+    post:
+      operationId: testWebhookEndpoint
+      summary: Send a test ping to webhook endpoint
+      description: Sends a test event to verify endpoint is reachable and signature validation works.
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook endpoint ID.
+      responses:
+        '200':
+          description: Test event sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Webhook endpoint not found.
+
+  /webhooks/endpoints/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: List webhook event deliveries
+      description: Lists recent delivery attempts for this endpoint with status and timestamps.
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook endpoint ID.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+          description: Maximum deliveries to return.
+      responses:
+        '200':
+          description: List of delivery attempts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        status:
+                          type: string
+                          enum: [PENDING, SUCCESS, FAILED]
+                        event:
+                          type: string
+                        createdAt:
+                          type: string
+                          format: date-time
+                        completedAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Webhook endpoint not found.
 
   # ── Health ────────────────────────────────────────────────────────────────────
 
