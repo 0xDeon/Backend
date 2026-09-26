@@ -136,6 +136,20 @@ async function rebalanceCheckJob(): Promise<void> {
       )
       const followsByUser = await loadActiveFollowsForUsers(userIds)
 
+      // Load active goals for all users in one query (#446). Returns empty when
+      // no users have active goals.
+      const goalsByUser = new Map<string, boolean>()
+      const userGoals = await db.savingsGoal.findMany({
+        where: {
+          userId: { in: userIds },
+          status: 'ACTIVE',
+        },
+        select: { userId: true },
+      })
+      for (const goal of userGoals as Array<{ userId: string }>) {
+        goalsByUser.set(goal.userId, true)
+      }
+
       // Resolve each user's effective config once. With no follow this is the
       // user's own values read exactly as they were before #285 — the raw
       // strategyConfig fields, uncoerced — so the no-follow path stays a
@@ -166,29 +180,29 @@ async function rebalanceCheckJob(): Promise<void> {
         })
       }
 
-      // Group by (protocol, effective strategy, follow) so users with different
-      // strategies are evaluated independently.
+      // Group by (protocol, strategy, riskCeiling, followId, hasActiveGoal) so
+      // users with different risk ceilings, follows, or active goals are
+      // evaluated independently. Prevents router.ts from applying user[0]'s
+      // settings to the entire batch (#446).
       //
-      // HAZARD: router.ts reads only userStrategyPreferences[0]. Without the
-      // follow component in this key, two followers of DIFFERENT published
-      // strategies sharing a protocol would collapse into one batch and both be
-      // rebalanced on index 0's config — including index 0's risk ceiling.
       // Keying on the per-user follow id (not the followed strategy id) is
       // deliberate: two followers of the SAME strategy can still have different
       // effective ceilings, because a follow clamps to the stricter of publisher
       // and follower. It costs some batching; it buys risk correctness.
       //
-      // For users without a follow the component is the constant 'none', so
-      // grouping is identical to before this feature.
+      // For users without a follow the component is the constant 'none'; without
+      // an active goal it is 'false', so grouping is unchanged for the no-follow,
+      // no-goal path.
       const byProtocolAndStrategy = new Map<
         string,
         { protocol: string; positions: PositionWithUser[]; batchKey: string }
       >()
       for (const pos of positions) {
         const { config, follow } = effectiveByUser.get(pos.userId)!
+        const hasGoal = goalsByUser.has(pos.userId)
         const key = `${pos.protocolName}:${config.strategyName || 'DEFAULT'}:${
-          follow?.followId ?? 'none'
-        }`
+          config.riskCeiling ?? 'none'
+        }:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}`
         if (!byProtocolAndStrategy.has(key)) {
           byProtocolAndStrategy.set(key, {
             protocol: pos.protocolName,

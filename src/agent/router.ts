@@ -685,8 +685,15 @@ export async function executeRebalanceIfNeeded(
       // the agent chase whatever rate that goal actually needs, not a static
       // preference that predates the goal. Users with no goal fall through to
       // the existing preference logic completely unchanged.
-      const goalUserId = userStrategyPreferences[0]?.userId
-      const activeGoal = goalUserId ? await loadActiveGoal(goalUserId) : null
+      //
+      // Load goals for all users in the batch. Since batches are keyed by
+      // (hasActiveGoal) in loop.ts (#446), all users here are either all-goal
+      // or all-no-goal, so we only need to check the first.
+      let activeGoal: Awaited<ReturnType<typeof loadActiveGoal>> = null
+      if (userStrategyPreferences.length > 0) {
+        const firstUserId = userStrategyPreferences[0].userId
+        activeGoal = firstUserId ? await loadActiveGoal(firstUserId) : null
+      }
 
       const preferredStrategy = userStrategyPreferences[0]?.strategyName
       const strategy: RebalanceStrategy = activeGoal
@@ -699,6 +706,10 @@ export async function executeRebalanceIfNeeded(
       // set do we load the current ProtocolRiskScore rows and pass them to the
       // strategy — the no-ceiling path issues no extra query and behaves
       // exactly as before.
+      //
+      // Since batches are keyed by riskCeiling in loop.ts (#446), all users
+      // in this batch have the same ceiling (or all none), so we can safely
+      // use index 0.
       const riskCeiling =
         activeGoal?.riskCeiling ??
         userStrategyPreferences[0]?.riskCeiling ??
