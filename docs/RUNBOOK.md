@@ -383,41 +383,38 @@ steps as comments. The `Migration rollback check` workflow blocks merge otherwis
 
 ## 7. Incident Contacts
 
+Alert-by-alert steps, ack timers, and the postmortem workflow are in [INCIDENT_RESPONSE.md](./INCIDENT_RESPONSE.md). This section is the contact list those steps use.
+
 ### Escalation tiers
 
 | Tier | Role | Responsibility | Contact |
 |---|---|---|---|
-| T1 | On-call engineer | Triage, restart, DLQ retry, RPC rotation | PagerDuty / Opsgenie |
-| T2 | Backend lead | Code fix, data reconciliation, migration rollback | Slack @backend-lead |
-| T3 | Engineering manager | Stakeholder comms, post-mortem, priority decisions | Slack @eng-mgr |
-| T4 | Security officer | Key compromise, wallet recovery, audit | Slack @sec-officer |
+| T1 | On-call engineer | Ack, triage, restart, DLQ retry, RPC rotation, sponsor top-up | PagerDuty (`PAGERDUTY_ROUTING_KEY`) |
+| T2 | Backend lead | Code fix, data reconciliation, migration rollback | Slack `@backend-lead`. Page if they have not answered inside the severity window |
+| T3 | Engineering manager | Stakeholder updates, priority, SEV1 postmortem acceptance | Slack `@eng-mgr` |
+| T4 | Security officer | Key compromise, wallet recovery, audit | Slack `@sec-officer`. Page immediately for SEV1 security incidents, do not wait for T2 |
 
 ### Communication channels
 
 | Channel | Purpose |
 |---|---|
 | `#neurowealth-alerts` | Prometheus alert notifications |
-| `#neurowealth-incidents` | Incident coordination thread |
-| PagerDuty | T1 on-call escalation |
-| Email: `ops@neurowealth.io` | Backup contact for critical outages |
+| `#neurowealth-incidents` | Incident coordination thread. The acknowledging engineer is the lead until they hand off in the thread |
+| PagerDuty | T1 page, then T2 at 15 min (SEV1) or 1 hour (SEV2) if still unacked or unmitigated |
+| Email: `ops@neurowealth.io` | Backup when PagerDuty or Slack is unreachable |
 
 ### Incident severity definitions
 
 | Severity | Definition | Response time | Escalation |
 |---|---|---|---|
-| **SEV1** | Event processing halted, funds at risk, data loss | < 15 min | T1 → T2 → T3 |
-| **SEV2** | Lag > 100 ledgers, DLQ > 50, agent loop degraded | < 1 hour | T1 → T2 |
-| **SEV3** | Lag > 50 ledgers, DLQ > 20, elevated error rate | < 8 hours | T1 |
+| **SEV1** | Event processing halted, global agent breaker open, funds at risk, data loss, sponsor XLM exhausted while deposits fail | < 15 min | T1 → T2 at 15 min → T3 at 30 min. T4 immediately for key compromise |
+| **SEV2** | Lag > 100 ledgers, DLQ > 50, agent loop degraded, readiness failing | < 1 hour | T1 → T2 if not mitigated in 1 hour |
+| **SEV3** | Lag > 50 ledgers, DLQ > 20, elevated latency | < 8 hours | T1 |
 | **SEV4** | Minor anomalies, informational alerts | Next business day | None |
 
-### Post-incident checklist
+### After the incident
 
-- [ ] Root cause identified and documented
-- [ ] Fix deployed (or rollback executed)
-- [ ] DLQ resolved and lag cleared
-- [ ] Alert thresholds adjusted if needed
-- [ ] Post-mortem filed in `docs/post-mortems/`
-- [ ] Runbook updated with lessons learned
+SEV1 and SEV2 are not closed until the postmortem in [INCIDENT_RESPONSE.md](./INCIDENT_RESPONSE.md) is merged. That workflow covers the timeline, the root cause, and the action items. Update this runbook in the same follow-up when a step here was wrong or missing.
 
 ---
 

@@ -5,6 +5,7 @@ This document provides production-grade observability guidance including alert t
 **Related Documentation**:
 - **SLO Guidance**: See `docs/SLO_GUIDANCE.md` for latency budgets and performance targets
 - **Runbook**: See `docs/RUNBOOK.md` for incident response procedures
+- **Incident response**: See `docs/INCIDENT_RESPONSE.md` for alert runbooks, escalation timers, and the postmortem workflow
 
 ## Overview
 
