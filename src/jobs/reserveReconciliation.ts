@@ -12,9 +12,12 @@ import {
   sponsorAvailableXlmGauge,
   reserveReconciliationDrift,
   sponsorCapacityExhaustedTotal,
+  recordBackgroundJob,
 } from '../utils/metrics'
 import { alertingService } from '../services/alerting'
 import { config } from '../config/env'
+import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 
 export async function reconcileOnce(): Promise<{
   driftCount: number
@@ -170,24 +173,33 @@ export async function reconcileOnce(): Promise<{
 }
 
 export async function runReserveReconciliation(): Promise<void> {
+  const start = Date.now()
+  const jobName = 'reserve_reconciliation'
   try {
     await reconcileOnce()
+    const durationMs = Date.now() - start
+    recordBackgroundJob(jobName, 'success', durationMs / 1000)
+    recordJobSuccess(jobName, durationMs)
   } catch (err) {
+    const durationMs = Date.now() - start
     logger.error('[ReserveReconciliation] Failed', {
       error: err instanceof Error ? err.message : String(err),
     })
+    recordBackgroundJob(jobName, 'failed', durationMs / 1000)
+    recordJobFailure(jobName, durationMs, err)
   }
 }
 
 let handle: NodeJS.Timeout | null = null
 
 export function scheduleReserveReconciliation(): NodeJS.Timeout {
-  void runReserveReconciliation()
   const interval = (config as any).reserveReconciliation?.intervalMs ?? 3600000
-  handle = setInterval(() => {
-    void runReserveReconciliation()
-  }, interval)
-  if (handle.unref) handle.unref()
+  handle = scheduleResilientJob({
+    jobName: 'reserve_reconciliation',
+    task: runReserveReconciliation,
+    intervalMs: interval,
+    unref: true,
+  })
   logger.info('[ReserveReconciliation] Scheduled', { intervalMs: interval })
   return handle
 }

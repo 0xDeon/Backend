@@ -6,6 +6,7 @@ import {
 } from '../utils/correlation'
 import { config } from '../config/env'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { computeRiskScore, RateSample } from '../agent/riskScoring'
 import { PROTOCOL_RISK_METADATA } from '../config/protocolRiskMetadata'
 
@@ -100,7 +101,7 @@ export async function computeProtocolRiskScores(
       logBackgroundJob(jobName, 'failed', durationMs / 1000, correlationId, {
         error: errorMessage,
       })
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -112,14 +113,13 @@ export async function computeProtocolRiskScores(
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleProtocolRiskScoring(): NodeJS.Timeout {
-  void computeProtocolRiskScores()
-
   const intervalMs = config.protocolRisk.intervalMs
-  const handle = setInterval(() => {
-    void computeProtocolRiskScores()
-  }, intervalMs)
-
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'protocol_risk_scoring',
+    task: computeProtocolRiskScores,
+    intervalMs,
+    unref: true,
+  })
 
   logger.info(
     `[ProtocolRiskScoring] Risk scoring scheduled every ${intervalMs / 3600000}h`

@@ -7,6 +7,7 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 
 /**
  * Delete all sessions whose expiration timestamp is in the past.
@@ -58,7 +59,7 @@ export async function cleanupExpiredSessions(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -71,11 +72,11 @@ export async function cleanupExpiredSessions(): Promise<void> {
  * @returns A NodeJS.Timeout handle (call clearInterval to stop it).
  */
 export function scheduleSessionCleanup(): NodeJS.Timeout {
-  // Run once at startup
-  cleanupExpiredSessions()
-
-  // Then run every 24 hours
-  const handle = setInterval(cleanupExpiredSessions, config.jwt.interval_ms)
+  const handle = scheduleResilientJob({
+    jobName: 'session_cleanup',
+    task: cleanupExpiredSessions,
+    intervalMs: config.jwt.interval_ms,
+  })
 
   logger.info('[SessionCleanup] Daily cleanup scheduled')
   return handle
