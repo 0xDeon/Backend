@@ -18,6 +18,26 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 - HTTP request metrics
 - Analytics API performance
 
+## Request Correlation IDs
+
+Every HTTP request is assigned a request ID by `correlationIdMiddleware`
+(`src/middleware/correlationId.ts`), which is registered **first** in the
+middleware chain so that early rejections (CORS, body parsing, rate limiting)
+are also correlated.
+
+| Where | How the ID appears |
+|---|---|
+| Inbound | A valid client-supplied `X-Request-ID` (or `X-Correlation-ID`) is reused; otherwise a UUID v4 is generated. IDs must match `^[A-Za-z0-9_-]{1,128}$`. |
+| Response | `X-Request-ID` header on every response (exposed via CORS), plus `requestId` in every error body. |
+| Logs | Winston injects `correlationId` from AsyncLocalStorage, and `traceId` / `spanId` from the active OpenTelemetry span. |
+| Traces | The active HTTP span gets the `http.request_id` attribute; failed requests also get `correlation.id`. |
+| Sentry | 5xx events are tagged `correlation_id`. |
+| Downstream | Call `correlationHeaders()` from `src/utils/correlation.ts` to forward `X-Request-ID` on outbound HTTP calls (`fetchWithRetry` does this automatically). |
+
+To debug a failed request, take the `requestId` from the error body and search
+logs for `correlationId`, or search traces for `http.request_id`. The log line's
+`traceId` links directly to the full trace.
+
 ## Prometheus Metrics
 
 ### Event Processing Metrics

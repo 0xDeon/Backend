@@ -147,6 +147,9 @@ configureTrustProxy(app)
 // ── Security and parsing middleware ───────────────────────────────────────────
 
 app.disable('x-powered-by')
+// Correlation ID — must run first so every response, including early
+// rejections from CORS / body parsing / rate limiting, carries X-Request-ID.
+app.use(correlationIdMiddleware)
 app.use(securityHeaders())
 app.use(permissionsPolicy())
 app.use(corsMiddleware)
@@ -161,9 +164,6 @@ app.use(
 )
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
-
-// Correlation ID — must run before requestLogger
-app.use(correlationIdMiddleware)
 
 // ── User context propagation ──────────────────────────────────────────────────
 //
