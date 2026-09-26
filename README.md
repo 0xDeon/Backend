@@ -31,8 +31,9 @@ npm install
 # 2. Configure environment
 cp .env.example .env
 # Edit .env with your values
+# REDIS_URL defaults to redis://localhost:6379 (provided by docker-compose)
 
-# 3. Start database
+# 3. Start database and Redis
 docker-compose up -d
 
 # 4. Run migrations
