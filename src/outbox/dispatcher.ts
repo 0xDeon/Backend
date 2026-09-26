@@ -277,7 +277,7 @@ export async function dispatchOne(opId: string): Promise<TransactionResult> {
     const snap = getFeeSnapshot()
     if (shouldDeferLowOp(op, snap.congestionLevel)) {
       const deferUntil = new Date(Date.now() + config.outbox.lowDeferMs)
-      await (db as any).outboxOp.update({
+      await db.outboxOp.update({
         where: { id: op.id },
         data: { nextAttemptAt: deferUntil },
       })
@@ -389,7 +389,7 @@ export async function runDispatchSweep(): Promise<void> {
       const snap = getFeeSnapshot()
       if (shouldDeferLowOp(op, snap.congestionLevel)) {
         const deferUntil = new Date(Date.now() + config.outbox.lowDeferMs)
-        await (db as any).outboxOp.update({
+        await db.outboxOp.update({
           where: { id: op.id },
           data: { nextAttemptAt: deferUntil },
         })

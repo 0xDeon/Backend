@@ -144,7 +144,7 @@ export async function executeOutboxPayload(
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
       // Record reserve ledger on success (best-effort, backfillable via reconciliation)
-      await (db as any).reserveSponsorship
+      await db.reserveSponsorship
         .create({
           data: {
             sponsoredId: payload.sponsoredId,
@@ -167,7 +167,7 @@ export async function executeOutboxPayload(
         sponsorKeypair: sponsor,
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
-      await (db as any).reserveSponsorship
+      await db.reserveSponsorship
         .create({
           data: {
             sponsoredId: payload.sponsoredId,
@@ -189,7 +189,7 @@ export async function executeOutboxPayload(
         ledgerKey: payload.ledgerKey,
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
-      await (db as any).reserveSponsorship
+      await db.reserveSponsorship
         .updateMany({
           where: { ledgerKey: payload.ledgerKey, status: 'ACTIVE' },
           data: { status: 'RECLAIMED', revokedAt: new Date() },

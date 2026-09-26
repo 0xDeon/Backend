@@ -11,7 +11,7 @@ import { stellarVerification } from '../utils/stellar/stellar-verification'
 import { logger } from '../utils/logger'
 
 const router = Router()
-const prisma = db as any
+const prisma = db
 
 router.use(requireAuth)
 router.use(requireSessionAuth)

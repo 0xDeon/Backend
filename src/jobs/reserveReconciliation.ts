@@ -20,7 +20,7 @@ export async function reconcileOnce(): Promise<{
   driftCount: number
   outstandingXlm: number
 }> {
-  const active = await (db as any).reserveSponsorship.findMany({
+  const active = await db.reserveSponsorship.findMany({
     where: { status: 'ACTIVE' },
   })
 
@@ -68,7 +68,7 @@ export async function reconcileOnce(): Promise<{
   } catch {}
 
   // check pending outbox ops to avoid false drift
-  const pendingOps = await (db as any).outboxOp.findMany({
+  const pendingOps = await db.outboxOp.findMany({
     where: {
       kind: 'ACCOUNT_PROVISION',
       status: { in: ['PENDING', 'SUBMITTED'] },
@@ -89,7 +89,7 @@ export async function reconcileOnce(): Promise<{
     if (pendingSponsoredIds.has(row.sponsoredId)) continue
 
     try {
-      const wallet = await (db as any).custodialWallet.findUnique({
+      const wallet = await db.custodialWallet.findUnique({
         where: { id: row.sponsoredId },
         select: { publicKey: true },
       })
