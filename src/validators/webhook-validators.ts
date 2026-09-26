@@ -72,4 +72,34 @@ export const webhookIdParamSchema = z.object({
   id: z.string().uuid('Invalid webhook ID'),
 })
 
+export const createUserWebhookEndpointSchema = z.object({
+  url: z.string().url('Must be a valid URL'),
+  events: z
+    .array(z.enum(WEBHOOK_EVENTS))
+    .min(1, 'At least one event is required'),
+  topicScope: z
+    .array(z.string())
+    .optional(),
+  filterJson: z.record(z.any()).nullable().optional(),
+})
+
+export const updateUserWebhookEndpointSchema = z.object({
+  url: z.string().url('Must be a valid URL').optional(),
+  events: z
+    .array(z.enum(WEBHOOK_EVENTS))
+    .min(1, 'At least one event is required')
+    .optional(),
+  topicScope: z
+    .array(z.string())
+    .optional(),
+  filterJson: z.record(z.any()).nullable().optional(),
+  status: z
+    .enum(['ACTIVE', 'PAUSED', 'DISABLED'])
+    .optional(),
+})
+
+export const userWebhookEndpointIdParamSchema = z.object({
+  id: z.string().uuid('Invalid endpoint ID'),
+})
+
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]
