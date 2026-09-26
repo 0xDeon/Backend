@@ -25,7 +25,7 @@ import {
 } from '../agent/breakerService'
 
 const router = Router()
-const prisma = db as any
+const prisma = db
 
 function auditLog(
   req: Request,

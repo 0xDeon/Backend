@@ -7,7 +7,7 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { recordAuthFailure } from '../utils/metrics'
 
-const prisma = db as any
+const prisma = db
 
 // ── Scope enum (#215) ──────────────────────────────────────────────────────
 
