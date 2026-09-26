@@ -615,25 +615,91 @@ components:
         - drawdown
         - computedAt
 
-    ValidationError:
+    ErrorResponse:
       type: object
+      description: |
+        Canonical error envelope returned by every 4xx/5xx response.
+        500 messages are always generic; use `requestId` (also sent as the
+        `X-Request-ID` header) to look the failure up in logs and traces.
       properties:
+        status:
+          type: integer
+          description: HTTP status code
+          example: 404
+        code:
+          type: string
+          description: Machine-readable error code
+          example: NOT_FOUND
+        message:
+          type: string
+          description: Human-readable, sanitized message
+          example: Resource not found
         error:
           type: string
-          example: Validation error
+          deprecated: true
+          description: Alias of `message`, kept for backward compatibility
+          example: Resource not found
         details:
-          type: object
+          description: Optional structured context
+        requestId:
+          type: string
+          example: 550e8400-e29b-41d4-a716-446655440000
+        timestamp:
+          type: string
+          format: date-time
       required:
+        - status
+        - code
+        - message
         - error
+        - requestId
+        - timestamp
+
+    FieldError:
+      type: object
+      properties:
+        field:
+          type: string
+          example: amount
+        path:
+          type: string
+          deprecated: true
+          description: Alias of `field`
+          example: amount
+        message:
+          type: string
+          example: Number must be greater than 0
+      required:
+        - field
+        - message
+
+    ValidationError:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            status:
+              example: 400
+            code:
+              example: VALIDATION_ERROR
+            message:
+              example: Validation failed
+            details:
+              type: array
+              items:
+                $ref: '#/components/schemas/FieldError'
 
     UnauthorizedError:
-      type: object
-      properties:
-        error:
-          type: string
-          example: Unauthorized
-      required:
-        - error
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            status:
+              example: 401
+            code:
+              example: UNAUTHORIZED
+            message:
+              example: Unauthorized
 
     # ── Real-time WebSocket subprotocol (#316) ───────────────────────────────
     #
