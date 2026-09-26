@@ -13,17 +13,17 @@ export async function createEndpoint(
   req: Request,
   res: Response
 ): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
-  if (!userId) {
+  if (!req.auth) {
     res.status(401).json({ error: 'Unauthorized' })
     return
   }
 
-  const { url, events = [], topicScope = [], filterJson = null } = req.body
-
-  if (!url || typeof url !== 'string') {
-    res.status(400).json({ error: 'Valid URL is required' })
-    return
+  const userId = req.auth.userId
+  const { url, events = [], topicScope = [], filterJson = null } = req.body as {
+    url: string
+    events: string[]
+    topicScope?: string[]
+    filterJson: Record<string, any> | null
   }
 
   try {
@@ -83,11 +83,12 @@ export async function listEndpoints(
   req: Request,
   res: Response
 ): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
-  if (!userId) {
+  if (!req.auth) {
     res.status(401).json({ error: 'Unauthorized' })
     return
   }
+
+  const userId = req.auth.userId
 
   try {
     const endpoints = await db.userWebhookEndpoint.findMany({
@@ -115,7 +116,12 @@ export async function listEndpoints(
 }
 
 export async function getEndpoint(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
+  if (!req.auth) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const userId = req.auth.userId
   const { id } = req.params
 
   try {
@@ -151,9 +157,20 @@ export async function updateEndpoint(
   req: Request,
   res: Response
 ): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
+  if (!req.auth) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const userId = req.auth.userId
   const { id } = req.params
-  const { url, events, topicScope, filterJson, status } = req.body
+  const { url, events, topicScope, filterJson, status } = req.body as {
+    url?: string
+    events?: string[]
+    topicScope?: string[]
+    filterJson?: Record<string, any> | null
+    status?: string
+  }
 
   try {
     const existing = await db.userWebhookEndpoint.findFirst({
@@ -203,7 +220,12 @@ export async function deleteEndpoint(
   req: Request,
   res: Response
 ): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
+  if (!req.auth) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const userId = req.auth.userId
   const { id } = req.params
 
   try {
@@ -223,7 +245,12 @@ export async function deleteEndpoint(
 }
 
 export async function rotateSecret(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
+  if (!req.auth) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const userId = req.auth.userId
   const { id } = req.params
 
   try {
@@ -254,7 +281,12 @@ export async function rotateSecret(req: Request, res: Response): Promise<void> {
 }
 
 export async function sendTestPing(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
+  if (!req.auth) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const userId = req.auth.userId
   const { id } = req.params
 
   try {
@@ -288,7 +320,12 @@ export async function sendTestPing(req: Request, res: Response): Promise<void> {
 }
 
 export async function replayEvents(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
+  if (!req.auth) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const userId = req.auth.userId
   const { id } = req.params
   const afterSeq = parseInt((req.query.afterSeq as string) || '0', 10)
 
@@ -357,7 +394,12 @@ export async function listDeliveries(
   req: Request,
   res: Response
 ): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId
+  if (!req.auth) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const userId = req.auth.userId
   const { id } = req.params
 
   try {
