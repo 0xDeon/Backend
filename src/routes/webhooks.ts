@@ -9,6 +9,9 @@ import {
   createWebhookSchema,
   updateWebhookSchema,
   webhookIdParamSchema,
+  createUserWebhookEndpointSchema,
+  updateUserWebhookEndpointSchema,
+  userWebhookEndpointIdParamSchema,
 } from '../validators/webhook-validators'
 import { getSubscriptionHealth } from '../services/webhookCircuitBreaker'
 import { replayDeadLetter } from '../services/webhookDispatcher'
@@ -335,14 +338,57 @@ import { handleMailWebhook } from '../controllers/email-identity-controller'
 router.post('/mail', handleMailWebhook)
 
 // User-scoped outbound webhook management endpoints (#368)
-router.post('/endpoints', createEndpoint)
-router.get('/endpoints', listEndpoints)
-router.get('/endpoints/:id', getEndpoint)
-router.patch('/endpoints/:id', updateEndpoint)
-router.delete('/endpoints/:id', deleteEndpoint)
-router.post('/endpoints/:id/rotate-secret', rotateSecret)
-router.post('/endpoints/:id/test', sendTestPing)
-router.post('/endpoints/:id/replay', replayEvents)
-router.get('/endpoints/:id/deliveries', listDeliveries)
+router.post(
+  '/endpoints',
+  requireAuth,
+  validate({ body: createUserWebhookEndpointSchema }),
+  createEndpoint
+)
+router.get('/endpoints', requireAuth, listEndpoints)
+router.get(
+  '/endpoints/:id',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  getEndpoint
+)
+router.patch(
+  '/endpoints/:id',
+  requireAuth,
+  validate({
+    params: userWebhookEndpointIdParamSchema,
+    body: updateUserWebhookEndpointSchema,
+  }),
+  updateEndpoint
+)
+router.delete(
+  '/endpoints/:id',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  deleteEndpoint
+)
+router.post(
+  '/endpoints/:id/rotate-secret',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  rotateSecret
+)
+router.post(
+  '/endpoints/:id/test',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  sendTestPing
+)
+router.post(
+  '/endpoints/:id/replay',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  replayEvents
+)
+router.get(
+  '/endpoints/:id/deliveries',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  listDeliveries
+)
 
 export default router
