@@ -21,6 +21,7 @@
 ### For DevOps/Deployment
 
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete deployment guide for all environments
+- **[DEPENDENCY_AUDIT.md](DEPENDENCY_AUDIT.md)** - Dependency inventory, security advisories, upgrade backlog and exceptions
 - **[IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md)** - Verification checklist
 
 ### For Reference

@@ -1,3 +1,5 @@
+import { correlationHeaders } from './correlation'
+
 /**
  * Fetch with timeout, retry, and circuit breaker support
  */
@@ -46,7 +48,10 @@ export async function fetchWithRetry(
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeout)
 
-      const res = await fetch(url, { signal: controller.signal })
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: correlationHeaders(),
+      })
       clearTimeout(timer)
 
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)

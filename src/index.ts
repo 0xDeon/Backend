@@ -25,6 +25,10 @@ import yaml from 'js-yaml'
 import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { correlationIdMiddleware } from './middleware/correlationId'
+import {
+  errorResponseMiddleware,
+  notFoundHandler,
+} from './middleware/errorResponse'
 import { requestLogger } from './middleware/logger'
 import { requestTimeoutMiddleware } from './middleware/requestTimeout'
 import {
@@ -147,6 +151,12 @@ configureTrustProxy(app)
 // ── Security and parsing middleware ───────────────────────────────────────────
 
 app.disable('x-powered-by')
+// Correlation ID — must run first so every response, including early
+// rejections from CORS / body parsing / rate limiting, carries X-Request-ID.
+app.use(correlationIdMiddleware)
+// Standard error envelope — wraps res.json so every later 4xx/5xx response
+// (including CORS, body parsing, auth and rate limiting) shares one shape.
+app.use(errorResponseMiddleware)
 app.use(securityHeaders())
 app.use(permissionsPolicy())
 app.use(corsMiddleware)
@@ -161,9 +171,6 @@ app.use(
 )
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
-
-// Correlation ID — must run before requestLogger
-app.use(correlationIdMiddleware)
 
 // ── User context propagation ──────────────────────────────────────────────────
 //
@@ -343,6 +350,9 @@ for (const route of apiRoutes) {
 for (const route of apiRoutes) {
   app.use(`/api/${route.path}`, deprecatedApiWarning, ...route.handlers)
 }
+
+// 404 for unmatched routes — after all routers, before the error handlers
+app.use(notFoundHandler)
 
 // 413 handler — must be after body parsers, before generic error handler
 app.use(payloadSizeErrorHandler)
