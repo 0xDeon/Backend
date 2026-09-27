@@ -47,6 +47,8 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.api_key_changed',
   /** #376 — new session sign-in alert. */
   'security.new_session',
+  /** #472 — a session was revoked (logout, admin, or refresh-token reuse). */
+  'security.session_revoked',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -89,6 +91,7 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'portfolio.updated': 'portfolio',
   'security.api_key_changed': 'alerts',
   'security.new_session': 'alerts',
+  'security.session_revoked': 'alerts',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)

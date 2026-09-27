@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/authenticate'
 import { requireScope, requireWithdrawScope } from '../middleware/apiKeyAuth'
 import { idempotent } from '../middleware/idempotency'
 import { requireSubAccountPermission } from '../middleware/subAccount'
+import { sensitiveRateLimiter } from '../middleware/rateLimiter'
 import { validate } from '../middleware/validate'
 import { processOnChainTransaction } from '../controllers/transaction-controller'
 
@@ -27,6 +28,10 @@ router.post(
   requireScope('withdraw:write'),
   requireWithdrawScope,
   idempotent({ required: true, failClosed: true, ttlSeconds: 86400 }),
+  // #473 — irreversible action, so it gets its own tight budget in addition to
+  // the caller's general allowance. Placed after authentication so the limiter
+  // can key on the real principal rather than the shared NAT address.
+  sensitiveRateLimiter,
   validate({ body: withdrawSchema, errorMessage: 'Validation error' }),
   requireSubAccountPermission('WITHDRAW'),
   async (req: Request, res: Response) => {

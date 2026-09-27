@@ -246,17 +246,6 @@ function validateKeypairNetworkMatch(
   }
 }
 
-/** Parse `CORS_ORIGINS` / `ALLOWED_ORIGINS` (comma-separated or `*`). */
-
-function parseCorsOrigins(): string[] | '*' {
-  const raw = (process.env.CORS_ORIGINS ?? process.env.ALLOWED_ORIGINS)?.trim()
-  if (!raw || raw === '*') return '*'
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
-
 function parseByteLimit(value: string | undefined, fallback: string): string {
   return value && /^\d+(kb|mb|b)?$/i.test(value) ? value : fallback
 }
@@ -304,7 +293,6 @@ logger.info(`🌐 Active Stellar network: ${stellarNetwork.toUpperCase()}`)
 logger.info(`   RPC URL: ${stellarRpcUrl}`)
 logger.info(`   Explorer: ${STELLAR_EXPLORER_URLS[stellarNetwork]}`)
 
-const corsOrigins = parseCorsOrigins()
 const bodySizeLimit = parseByteLimit(
   process.env.BODY_SIZE_LIMIT ?? process.env.BODY_LIMIT_JSON,
   '64kb'
@@ -360,11 +348,13 @@ export const config = {
      * HashiCorp Vault — never commit the raw value.
      */
     walletEncryptionKey: process.env.WALLET_ENCRYPTION_KEY || '',
-    cors: {
-      origins: corsOrigins,
-    },
-    /** Used by `corsandbody` — empty when wildcard (non-production allows all origins). */
-    allowedOrigins: corsOrigins === '*' ? [] : corsOrigins,
+    /**
+     * CORS origin allowlist is deliberately NOT parsed here. It is owned by
+     * `src/config/cors.ts` (#471), which normalises origins, handles subdomain
+     * wildcards, and decides environment strictness. Two parsers for one setting
+     * is how the previous implementation ended up enforcing a variable the env
+     * files never set.
+     */
     bodySizeLimit,
     bodyLimits: {
       json: parseByteLimit(process.env.BODY_LIMIT_JSON, bodySizeLimit),
@@ -392,6 +382,45 @@ export const config = {
     internalRateLimit: {
       windowMs: parseInt(process.env.INTERNAL_RATE_LIMIT_WINDOW_MS || '60000'),
       max: parseInt(process.env.INTERNAL_RATE_LIMIT_MAX || '500'),
+    },
+    /**
+     * Anonymous traffic (#473) — unauthenticated callers to the public API.
+     * Deliberately far stricter than the authenticated tier: an anonymous
+     * request has no proven identity, so the budget exists to slow enumeration
+     * and scraping rather than to accommodate legitimate use. The split only
+     * works if it is enforced on *both* sides — if the authenticated tier were
+     * as tight, every user behind one corporate NAT would exhaust the shared
+     * per-IP budget, and the limiter would push load onto the login endpoint.
+     */
+    anonymousRateLimit: {
+      windowMs: parseInt(
+        process.env.ANONYMOUS_RATE_LIMIT_WINDOW_MS || '900000'
+      ),
+      max: parseInt(process.env.ANONYMOUS_RATE_LIMIT_MAX || '60'),
+    },
+    /**
+     * Authenticated traffic (#473) — keyed per principal (see principalKey in
+     * src/middleware/rateLimiter.ts), so this is a per-user or per-API-key
+     * allowance rather than a per-IP one.
+     */
+    authenticatedRateLimit: {
+      windowMs: parseInt(
+        process.env.AUTHENTICATED_RATE_LIMIT_WINDOW_MS || '900000'
+      ),
+      max: parseInt(process.env.AUTHENTICATED_RATE_LIMIT_MAX || '600'),
+    },
+    /**
+     * Sensitive operations (#473) — money movement, credential changes and
+     * anything else where one request has irreversible consequences. Applied
+     * per-endpoint on top of the caller's normal budget, not instead of it:
+     * a tight limit here should throttle the risky action, not the reads the
+     * user does around it.
+     */
+    sensitiveRateLimit: {
+      windowMs: parseInt(
+        process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS || '900000'
+      ),
+      max: parseInt(process.env.SENSITIVE_RATE_LIMIT_MAX || '10'),
     },
     /**
      * Portfolio optimizer (#322) — the only genuinely CPU-bound endpoint in the

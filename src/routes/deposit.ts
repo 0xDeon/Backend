@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { requireAuth } from '../middleware/authenticate'
 import { requireScope } from '../middleware/apiKeyAuth'
+import { sensitiveRateLimiter } from '../middleware/rateLimiter'
 import { validate } from '../middleware/validate'
 import { processOnChainTransaction } from '../controllers/transaction-controller'
 
@@ -28,6 +29,8 @@ router.post(
   '/',
   requireAuth,
   requireScope('deposit:write'),
+  // #473 — fund movement, same reasoning as withdrawals.
+  sensitiveRateLimiter,
   validate({ body: depositSchema, errorMessage: 'Validation error' }),
   async (req: Request, res: Response) => {
     return processOnChainTransaction(req, res, 'DEPOSIT')

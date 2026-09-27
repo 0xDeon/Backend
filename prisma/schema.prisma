@@ -332,7 +332,20 @@ model Session {
   network               Network
   expiresAt             DateTime
   refreshTokenHash      String?
+  // SHA-256 of the raw refresh token ("sha256:<hex>"). A deterministic lookup
+  // key that narrows rotation to one indexed row before the bcrypt compare
+  // against refreshTokenHash (#472). Without it, verifying a refresh token
+  // requires a bcrypt compare against every live session in the system.
+  // Nullable so the migration is safe on pre-existing rows; sessions without
+  // one cannot be refreshed and must re-authenticate.
+  refreshTokenPrefix    String?
   refreshTokenExpiresAt DateTime?
+  /// Set the moment the current refresh token is exchanged. A later request
+  /// presenting a token whose prefix matches a rotated row is a replay
+  /// (#472) and revokes the whole session.
+  refreshTokenUsedAt    DateTime?
+  /// Number of rotations on this session. Diagnostic only.
+  refreshTokenRotations Int       @default(0)
   ipAddress             String?
   userAgent             String?
   label                 String?
@@ -350,6 +363,7 @@ model Session {
   @@index([expiresAt])
   @@index([userId, expiresAt])
   @@index([revokedAt])
+  @@index([refreshTokenPrefix])
   @@map("sessions")
 }
 

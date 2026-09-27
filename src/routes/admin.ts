@@ -16,6 +16,7 @@ import { logger } from '../utils/logger'
 import { requireAdminAuth, requireAdminScope } from '../middleware/adminAuth'
 import { getAllProviderHealth, adminSetProviderCircuit } from '../fiat/registry'
 import db from '../db'
+import { revokeSession } from '../services/refresh-token.service'
 import { alertingService } from '../services/alerting'
 import { verifyAuditChain } from '../audit/chain'
 import {
@@ -1424,20 +1425,34 @@ router.post(
   requireAdminScope('write'),
   async (req: Request, res: Response) => {
     try {
-      const result = await prisma.session.updateMany({
+      // #472: an admin kill-switch that only sets revokedAt leaves every
+      // outstanding refresh token live, so the user (or whoever captured one)
+      // can mint new access tokens after the admin has revoked them. revokeSession()
+      // clears the refresh material as part of the revoke.
+      const sessions = await prisma.session.findMany({
         where: { userId: req.params.id, revokedAt: null },
-        data: { revokedAt: new Date(), revokedReason: 'admin' },
+        select: { id: true, deviceType: true, approxLocation: true },
       })
+
+      await Promise.all(
+        sessions.map((session) =>
+          revokeSession(session.id, 'admin', {
+            userId: req.params.id,
+            deviceType: session.deviceType,
+            approxLocation: session.approxLocation,
+          })
+        )
+      )
 
       auditLog(req, res, 'REVOKE_ALL_USER_SESSIONS', 'success', {
         userId: req.params.id,
-        count: result.count,
+        count: sessions.length,
         reason: req.body?.reason ?? 'admin_action',
       })
 
       res.status(200).json({
         success: true,
-        data: { revokedCount: result.count },
+        data: { revokedCount: sessions.length },
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
