@@ -38,10 +38,7 @@ function verifySmtpWebhookSignature(
     .createHmac('sha256', signingSecret)
     .update(payload)
     .digest('hex')
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(computed)
-  )
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computed))
 }
 
 /**
@@ -194,12 +191,11 @@ export class SesMailProvider implements MailProvider {
     }
 
     try {
-      const {
-        SendEmailCommand,
-      } = require('@aws-sdk/client-sesv2')
+      const { SendEmailCommand } = require('@aws-sdk/client-sesv2')
 
       const command = new SendEmailCommand({
-        FromEmailAddress: process.env.SES_FROM_EMAIL || 'noreply@neurowealth.app',
+        FromEmailAddress:
+          process.env.SES_FROM_EMAIL || 'noreply@neurowealth.app',
         Destination: {
           ToAddresses: [message.to],
         },
@@ -267,10 +263,7 @@ export class SesMailProvider implements MailProvider {
     }
   }
 
-  private verifySesSignature(
-    payload: any,
-    signature: string
-  ): boolean {
+  private verifySesSignature(payload: any, signature: string): boolean {
     const certUrl = payload.SigningCertUrl
     if (!certUrl || !certUrl.startsWith('https://')) {
       logger.warn('[SesMailProvider] Invalid or missing certificate URL')
@@ -287,7 +280,9 @@ export class SesMailProvider implements MailProvider {
 
       // For production, you would fetch the cert from certUrl and verify
       // This is a placeholder that validates the structure
-      logger.warn('[SesMailProvider] SES signature verification deferred to HTTPS cert check')
+      logger.warn(
+        '[SesMailProvider] SES signature verification deferred to HTTPS cert check'
+      )
       return true
     } catch (err) {
       logger.warn('[SesMailProvider] Failed to verify SES signature', {
