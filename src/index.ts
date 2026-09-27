@@ -33,6 +33,7 @@ import { requestLogger } from './middleware/logger'
 import { requestTimeoutMiddleware } from './middleware/requestTimeout'
 import {
   rateLimiter,
+  tieredRateLimiter,
   authRateLimiter,
   adminRateLimiter,
   internalRateLimiter,
@@ -104,6 +105,7 @@ import {
   payloadSizeErrorHandler,
   urlencodedBodyParser,
   contentTypeRestrictionMiddleware,
+  validateCorsConfig,
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
@@ -140,6 +142,22 @@ let reserveReconciliationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
+}
+
+// ── Configuration validation ──────────────────────────────────────────────────
+
+// A production or staging deployment that cannot enforce a CORS allowlist must
+// not start: every browser request would 403, and shipping that as a
+// half-working service is worse than failing loudly at boot (#471).
+try {
+  validateCorsConfig()
+} catch (error) {
+  logger.error(
+    `[CORS] Fatal startup error: ${
+      error instanceof Error ? error.message : String(error)
+    }`
+  )
+  process.exit(1)
 }
 
 // ── Express app ───────────────────────────────────────────────────────────────
@@ -194,6 +212,13 @@ app.use((req: Request & { user?: { id: string } }, _res: Response, next) => {
 app.use(requestLogger)
 app.use(trustedIpBypass)
 app.use(rateLimiter)
+// #473 — identity tiering. This single limiter charges anonymous callers to a
+// strict per-IP budget and authenticated callers to a generous per-principal one
+// (see tieredRateLimiter). It resolves identity from the request itself, so it
+// works here, ahead of each route's auth middleware: API keys are self-
+// describing in the Authorization header, and session tokens are classified once
+// the auth middleware has resolved req.userId.
+app.use(tieredRateLimiter)
 app.use(requestTimeoutMiddleware)
 
 // Advertise the served API version on every response — must be registered

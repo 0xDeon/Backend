@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { Request, Response } from 'express'
+import { Prisma } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
 import {
@@ -19,7 +20,12 @@ export async function createEndpoint(
   }
 
   const userId = req.auth.userId
-  const { url, events = [], topicScope = [], filterJson = null } = req.body as {
+  const {
+    url,
+    events = [],
+    topicScope = [],
+    filterJson = null,
+  } = req.body as {
     url: string
     events: string[]
     topicScope?: string[]
@@ -195,7 +201,12 @@ export async function updateEndpoint(
         ...(url && { url }),
         ...(events && Array.isArray(events) && { events }),
         ...(topicScope && Array.isArray(topicScope) && { topicScope }),
-        ...(filterJson !== undefined && { filterJson }),
+        // An explicit `null` means "clear the filter", which Prisma expresses as
+        // DbNull rather than a raw null (raw null is rejected by the input type
+        // and would otherwise silently no-op the update).
+        ...(filterJson !== undefined && {
+          filterJson: filterJson === null ? Prisma.DbNull : filterJson,
+        }),
         ...(status && { status }),
       },
       select: {

@@ -1,28 +1,48 @@
 // src/controllers/auth-controller.ts
 // #214 – adds refresh token rotation; updates verify() and logout()
+// #472 – refresh rotation, replay detection and durable revocation live in
+//        services/refresh-token.service.ts; this controller is HTTP glue only.
 import { Request, Response } from 'express'
 import { randomBytes } from 'crypto'
-import bcrypt from 'bcryptjs'
 import { Keypair } from '@stellar/stellar-sdk'
 import { JwtAdapter, config } from '../config'
 import { logger } from '../utils/logger'
 import db from '../db'
 import { stellarVerification } from '../utils/stellar/stellar-verification'
 import { attributeSignup } from '../referral/service'
-import { closeUserSockets } from '../ws/server'
 import { parseDeviceType } from '../utils/deviceType'
 import { resolveApproxLocation } from '../utils/geoip'
 import { createSessionDeepLinkToken } from '../utils/sessionDeepLink'
 import { publishUserEvent } from '../events/publisher'
+import {
+  issueTokenPair,
+  newRefreshTokenFields,
+  revokeSession,
+  rotateRefreshToken,
+  type RefreshFailureReason,
+} from '../services/refresh-token.service'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-async function hashToken(raw: string): Promise<string> {
-  return bcrypt.hash(raw, 10)
-}
-
-async function compareToken(raw: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(raw, hash)
+/** Maps service-level failure reasons onto the codes clients already handle. */
+const REFRESH_ERRORS: Record<
+  RefreshFailureReason,
+  { status: number; error: string }
+> = {
+  invalid_token: { status: 401, error: 'Invalid or expired refresh token' },
+  expired: { status: 401, error: 'Invalid or expired refresh token' },
+  session_revoked: { status: 401, error: 'Session revoked' },
+  user_inactive: { status: 401, error: 'User account is inactive' },
+  reuse_detected: {
+    status: 401,
+    // Deliberately identical to the generic failure: telling a caller that we
+    // detected reuse confirms the token is real, which is a free oracle.
+    error: 'Invalid or expired refresh token',
+  },
+  rotation_conflict: {
+    status: 409,
+    error: 'Concurrent refresh detected, retry',
+  },
 }
 
 // ── Controllers ────────────────────────────────────────────────────────────
@@ -132,18 +152,11 @@ export async function verify(req: Request, res: Response): Promise<void> {
       }
     }
 
-    // #214 – issue short-lived access token + long-lived refresh token
-    const accessToken = await JwtAdapter.generateAccessToken({ id: user.id })
-    const refreshToken = JwtAdapter.generateRefreshToken() // opaque, 48 bytes
-    const accessExpires = JwtAdapter.accessTokenExpiresAt()
-    const refreshExpires = JwtAdapter.refreshTokenExpiresAt()
+    // #472 – short-lived access token + long-lived opaque refresh token, both
+    // issued through the service so the stored shape cannot drift from what
+    // rotation expects to find.
+    const pair = await issueTokenPair(user.id)
 
-    if (!accessToken) {
-      res.status(500).json({ error: 'Failed to generate token' })
-      return
-    }
-
-    const refreshHash = await hashToken(refreshToken)
     const userAgent = req.headers['user-agent'] ?? null
     const ipAddress = req.ip ?? null
     const deviceType = parseDeviceType(userAgent)
@@ -152,18 +165,17 @@ export async function verify(req: Request, res: Response): Promise<void> {
     const session = await db.session.create({
       data: {
         userId: user.id,
-        token: accessToken,
+        token: pair.accessToken,
         walletAddress: stellarPubKey,
         network,
-        expiresAt: accessExpires,
-        refreshTokenHash: refreshHash,
-        refreshTokenExpiresAt: refreshExpires,
+        expiresAt: pair.expiresAt,
         ipAddress,
         userAgent,
         deviceType,
         approxLocation,
         lastSeenAt: new Date(),
         lastSeenIp: ipAddress,
+        ...newRefreshTokenFields(pair),
       },
     })
 
@@ -182,11 +194,11 @@ export async function verify(req: Request, res: Response): Promise<void> {
     )
 
     res.status(200).json({
-      accessToken,
-      refreshToken, // returned ONCE — not stored in plaintext
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken, // returned ONCE — not stored in plaintext
       userId: user.id,
-      expiresAt: accessExpires.toISOString(),
-      refreshExpiresAt: refreshExpires.toISOString(),
+      expiresAt: pair.expiresAt.toISOString(),
+      refreshExpiresAt: pair.refreshExpiresAt.toISOString(),
     })
   } catch (error) {
     logger.error('[Auth] Verify error:', error)
@@ -199,94 +211,34 @@ export async function verify(req: Request, res: Response): Promise<void> {
  *
  * Body: { refreshToken: string }
  *
- * #214 – Refresh token rotation:
- *   1. Accept the raw refresh token from the client.
- *   2. Find the session whose refreshTokenHash matches (bcrypt compare).
- *   3. Reject if expired or already used (hash consumed on each rotation).
- *   4. Issue a new access token + new refresh token.
- *   5. Update the session row: new access token, new refresh hash, new expiries.
- *
- * Old refresh token is invalidated immediately upon use (single-use).
+ * #472 – Rotation with replay detection. The whole state machine lives in
+ * services/refresh-token.service.ts; this handler only maps the outcome to a
+ * status code. Presenting a token that was already exchanged revokes the whole
+ * session, and the caller still sees a generic 401 so the endpoint cannot be
+ * used as an "is this token real?" oracle.
  */
 export async function refresh(req: Request, res: Response): Promise<void> {
-  const { refreshToken } = req.body as { refreshToken?: string }
+  const { refreshToken } = req.body as { refreshToken?: unknown }
 
-  if (!refreshToken || typeof refreshToken !== 'string') {
+  if (typeof refreshToken !== 'string' || refreshToken.length === 0) {
     res.status(400).json({ error: 'refreshToken is required' })
     return
   }
 
   try {
-    const now = new Date()
+    const result = await rotateRefreshToken(refreshToken)
 
-    // Narrow candidate set: non-expired refresh tokens only
-    const candidates = await (db as any).session.findMany({
-      where: {
-        refreshTokenHash: { not: null },
-        refreshTokenExpiresAt: { gt: now },
-      },
-      include: { user: { select: { id: true, isActive: true } } },
-    })
-
-    let matched: (typeof candidates)[number] | null = null
-
-    for (const candidate of candidates) {
-      if (!candidate.refreshTokenHash) continue
-      const ok = await compareToken(refreshToken, candidate.refreshTokenHash)
-      if (ok) {
-        matched = candidate
-        break
-      }
-    }
-
-    if (!matched) {
-      res.status(401).json({ error: 'Invalid or expired refresh token' })
+    if (!result.ok) {
+      const mapped = REFRESH_ERRORS[result.reason]
+      res.status(mapped.status).json({ error: mapped.error })
       return
     }
-
-    if (matched.revokedAt) {
-      res.status(401).json({ error: 'session_revoked' })
-      return
-    }
-
-    if (!matched.user.isActive) {
-      res.status(401).json({ error: 'User account is inactive' })
-      return
-    }
-
-    // Issue new token pair
-    const newAccessToken = await JwtAdapter.generateAccessToken({
-      id: matched.userId,
-    })
-    const newRefreshToken = JwtAdapter.generateRefreshToken()
-    const newAccessExpires = JwtAdapter.accessTokenExpiresAt()
-    const newRefreshExpires = JwtAdapter.refreshTokenExpiresAt()
-
-    if (!newAccessToken) {
-      res.status(500).json({ error: 'Failed to generate access token' })
-      return
-    }
-
-    const newRefreshHash = await hashToken(newRefreshToken)
-
-    // Rotate: update the session with new tokens (old refresh token is now invalid)
-    await (db as any).session.update({
-      where: { id: matched.id },
-      data: {
-        token: newAccessToken,
-        expiresAt: newAccessExpires,
-        refreshTokenHash: newRefreshHash,
-        refreshTokenExpiresAt: newRefreshExpires,
-      },
-    })
-
-    logger.info(`[Auth] Refresh token rotated for user ${matched.userId}`)
 
     res.status(200).json({
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-      expiresAt: newAccessExpires.toISOString(),
-      refreshExpiresAt: newRefreshExpires.toISOString(),
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresAt: result.expiresAt,
+      refreshExpiresAt: result.refreshExpiresAt,
     })
   } catch (error) {
     logger.error('[Auth] Refresh error:', error)
@@ -297,27 +249,43 @@ export async function refresh(req: Request, res: Response): Promise<void> {
 /**
  * POST /api/auth/logout
  *
- * #214 – Revokes BOTH the access token and the refresh token by deleting all
- * sessions for the current user (covers multi-device if desired) or just the
- * matched access-token session.
+ * #472 – Soft revoke instead of DELETE. The previous implementation ran
+ * `deleteMany({ token })`, which removed the row outright: the user lost the
+ * entry in their session list and no record survived that the session had been
+ * terminated. The row is kept for REVOKED_SESSION_RETAIN_DAYS, and the refresh
+ * material is cleared so a refresh token captured before the logout cannot
+ * resurrect the session.
  */
 export async function logout(req: Request, res: Response): Promise<void> {
   const authorization = req.header('Authorization') ?? ''
   const token = authorization.split(' ')[1] ?? ''
 
   try {
-    // Delete the session matched by access token (also nukes its refresh token hash)
-    await db.session.deleteMany({ where: { token } })
+    const session = token
+      ? await db.session.findFirst({ where: { token } })
+      : null
 
-    // #316: a revoked session must kill the user's live sockets, not just block
-    // the next handshake. The per-connection recheck would catch this within
-    // WS_SESSION_RECHECK_MS anyway; doing it here closes the window now, on the
-    // pod handling the logout. Sockets on other pods still fall to the recheck.
-    if (req.userId) {
-      closeUserSockets(req.userId, 'Session revoked')
+    if (!session) {
+      // Nothing to revoke. Stay 200 so logout is idempotent: a client retrying
+      // after a network timeout should not surface an error.
+      res.status(200).json({ message: 'Logged out successfully' })
+      return
     }
 
-    logger.info(`[Auth] Session revoked for user ${req.userId}`)
+    // #316: a revoked session must kill the user's live sockets, not just block
+    // the next handshake. revokeSession() closes them on this pod; sockets on
+    // other pods fall to the WS_SESSION_RECHECK_MS recheck.
+    await revokeSession(session.id, 'logout', {
+      userId: session.userId,
+      deviceType: session.deviceType,
+      approxLocation: session.approxLocation,
+    })
+
+    logger.info('[Auth] Session revoked for user', {
+      userId: req.userId ?? session.userId,
+      sessionId: session.id,
+    })
+
     res.status(200).json({ message: 'Logged out successfully' })
   } catch (error) {
     logger.error('[Auth] Logout error:', error)

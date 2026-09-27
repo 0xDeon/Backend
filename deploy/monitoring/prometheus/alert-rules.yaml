@@ -157,3 +157,53 @@ groups:
         annotations:
           summary: "Agent circuit breaker OPEN for a protocol or user"
           description: "{{ $labels.scope }} {{ $labels.scopeKey }} is halted (state={{ $value }})"
+
+      # ── Rate limiting (#473) ──────────────────────────────────────────────
+      # A 429 storm is one of the few signals that means "someone is attacking
+      # us" *or* "we shipped a client bug". The principal_type label separates
+      # the two, which is why the counter carries it.
+
+      - alert: RateLimitAnonymousFlood
+        expr: sum(rate(rate_limit_hits_total{principal_type="anonymous"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Anonymous requests are being rate limited heavily"
+          description: "{{ $value }} anonymous 429s/sec for 5 minutes. Likely scraping, enumeration or credential stuffing against the auth endpoints. Check route_group={{ $labels.route_group }} and consider tightening ANONYMOUS_RATE_LIMIT_MAX or adding TRUSTED_IPS for legitimate clients."
+
+      - alert: RateLimitAuthSpike
+        expr: sum(rate(rate_limit_hits_total{limiter_type="auth"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Authentication endpoint brute-force / credential stuffing"
+          description: "{{ $value }} blocked auth attempts/sec. Requests are being stopped, but investigate the source; AUTH_RATE_LIMIT_MAX is doing its job, not replacing a credential audit."
+
+      - alert: RateLimitSensitiveBlocked
+        expr: sum(rate(rate_limit_hits_total{limiter_type="sensitive"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sensitive operations (withdrawals, deposits, key changes) are being throttled"
+          description: "{{ $value }} blocked sensitive requests/sec on {{ $labels.route_group }}. Either a user/client is looping, or an attacker with a valid credential is attempting many withdrawals or API-key minting. Review immediately."
+
+      - alert: RateLimitAuthenticatedBlocked
+        expr: sum(rate(rate_limit_hits_total{principal_type=~"user|api_key"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Authenticated requests are being rate limited"
+          description: "{{ $value }} blocked requests/sec from identified principals. Usually a client bug or a leaked API key rather than an attack. Check the key's rateLimitPerMin and the caller's retry logic."
+
+      - alert: RateLimitBlockedNow
+        expr: sum(rate_limit_active_violations) > 50
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained rate limiting across route groups"
+          description: "{{ $value }} route groups currently reporting blocked requests. Distinguishes an ongoing event from a historical total."

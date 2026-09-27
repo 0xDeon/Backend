@@ -77,10 +77,8 @@ export const createUserWebhookEndpointSchema = z.object({
   events: z
     .array(z.enum(WEBHOOK_EVENTS))
     .min(1, 'At least one event is required'),
-  topicScope: z
-    .array(z.string())
-    .optional(),
-  filterJson: z.record(z.any()).nullable().optional(),
+  topicScope: z.array(z.string()).optional(),
+  filterJson: z.record(z.string(), z.any()).nullable().optional(),
 })
 
 export const updateUserWebhookEndpointSchema = z.object({
@@ -89,13 +87,9 @@ export const updateUserWebhookEndpointSchema = z.object({
     .array(z.enum(WEBHOOK_EVENTS))
     .min(1, 'At least one event is required')
     .optional(),
-  topicScope: z
-    .array(z.string())
-    .optional(),
-  filterJson: z.record(z.any()).nullable().optional(),
-  status: z
-    .enum(['ACTIVE', 'PAUSED', 'DISABLED'])
-    .optional(),
+  topicScope: z.array(z.string()).optional(),
+  filterJson: z.record(z.string(), z.any()).nullable().optional(),
+  status: z.enum(['ACTIVE', 'PAUSED', 'DISABLED']).optional(),
 })
 
 export const userWebhookEndpointIdParamSchema = z.object({
