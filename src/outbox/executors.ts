@@ -103,7 +103,8 @@ async function submitSponsoredTransaction(
  */
 export async function executeOutboxPayload(
   payload: OutboxPayload,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   switch (payload.method) {
     case 'deposit':
@@ -112,7 +113,8 @@ export async function executeOutboxPayload(
         payload.userAddress,
         payload.amount,
         payload.assetSymbol,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
     case 'withdraw':
       return withdrawForUser(
@@ -120,20 +122,23 @@ export async function executeOutboxPayload(
         payload.userAddress,
         payload.amount,
         payload.assetSymbol,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
     case 'rebalance':
       return submitRebalance(
         payload.toProtocol,
         payload.expectedApyBasisPoints,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
     case 'referral_reward':
       return payReferralReward(
         payload.recipientAddress,
         payload.amount,
         payload.assetSymbol,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
     case 'sponsor_create_account': {
       const sponsor = getSponsorKeypair(payload.sponsorAccount)
