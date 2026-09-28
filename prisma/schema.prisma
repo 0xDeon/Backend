@@ -1918,6 +1918,27 @@ model MultisigEnvelope {
   @@map("multisig_envelopes")
 }
 
+/// Versioned, validated sweep policy for one tier pair (#528). A change never
+/// mutates an existing row — createPolicyVersion deactivates the current
+/// active policy and inserts a new one, so every policy change is an
+/// auditable new version.
+model TreasurySweepPolicy {
+  id                    String       @id @default(uuid())
+  fromTier              TreasuryTier
+  toTier                TreasuryTier
+  maxHotBalance         Decimal      @db.Decimal(36, 18)
+  sweepIntervalMinutes  Int
+  minSweepAmount        Decimal      @db.Decimal(36, 18)
+  requiresApprovalAbove Decimal?     @db.Decimal(36, 18)
+  version               Int
+  isActive              Boolean      @default(true)
+  createdBy             String
+  createdAt             DateTime     @default(now())
+
+  @@index([fromTier, toTier, isActive])
+  @@map("treasury_sweep_policies")
+}
+
 // --- Issue #350: Liquidity Risk & Time-to-Exit Estimation ---
 model ProtocolLiquiditySnapshot {
   id                   String   @id @default(uuid())
