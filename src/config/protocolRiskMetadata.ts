@@ -89,6 +89,18 @@ export function invalidateMetadataCache(): void {
 }
 
 /**
+ * Directly seeds the in-process cache without a DB round-trip — for unit
+ * tests that exercise pure consumers of getProtocolMetadata (e.g.
+ * computeRiskScore) without mocking the database. Never call from
+ * production code; use refreshMetadataCache() there.
+ */
+export function seedMetadataCache(
+  entries: readonly ProtocolRiskMetadata[]
+): void {
+  cache = new Map(entries.map((e) => [e.protocolName, e]))
+}
+
+/**
  * Repopulates the in-process cache from the DB. Call at startup and after
  * every admin write to ProtocolRiskMetadataEntry — this module never reads
  * the DB on its own, so a cache never refreshed stays at its last-known
