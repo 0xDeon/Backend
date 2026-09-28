@@ -594,6 +594,54 @@ model ProtocolRiskScore {
   @@map("protocol_risk_scores")
 }
 
+enum DataConfidence {
+  VERIFIED
+  SELF_REPORTED
+  UNVERIFIED
+}
+
+/// Sourced, reviewable protocol risk metadata (#529) — supersedes the
+/// hand-curated static PROTOCOL_RISK_METADATA table in
+/// src/config/protocolRiskMetadata.ts (see docs/PROTOCOL_RISK_SCORING.md for
+/// the supersession note). auditReference is now required; sourceUrl is
+/// required for any upgrade to VERIFIED confidence.
+model ProtocolRiskMetadataEntry {
+  id              String         @id @default(uuid())
+  protocolName    String         @unique
+  auditStatus     AuditStatus
+  auditReference  String
+  sourceUrl       String?
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  nextReviewDueAt DateTime
+  dataConfidence  DataConfidence @default(UNVERIFIED)
+  inceptionDate   DateTime
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  history ProtocolRiskMetadataHistory[]
+
+  @@index([nextReviewDueAt])
+  @@map("protocol_risk_metadata_entries")
+}
+
+/// Append-only audit trail for ProtocolRiskMetadataEntry changes — a
+/// disputed status change is always inspectable, not just the current state.
+model ProtocolRiskMetadataHistory {
+  id             String         @id @default(uuid())
+  entryId        String
+  auditStatus    AuditStatus
+  dataConfidence DataConfidence
+  sourceUrl      String?
+  changedBy      String
+  changedAt      DateTime       @default(now())
+
+  entry ProtocolRiskMetadataEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([entryId])
+  @@map("protocol_risk_metadata_history")
+}
+
 model AgentLog {
   id             String      @id @default(uuid())
   userId         String? // null for system-level actions (scans, alerts)
