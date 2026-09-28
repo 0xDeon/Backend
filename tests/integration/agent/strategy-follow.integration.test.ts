@@ -130,12 +130,25 @@ beforeEach(() => {
   mockExecuteRebalanceIfNeeded.mockResolvedValue(null)
   mockSubmitRebalance.mockResolvedValue({ hash: 'tx-hash' })
   mockDb.position = { findMany: jest.fn().mockResolvedValue([]) }
+  mockDb.savingsGoal = { findMany: jest.fn().mockResolvedValue([]) }
   mockDb.strategyFollow = { findMany: jest.fn().mockResolvedValue([]) }
   mockDb.custodialWallet = {
     findUnique: jest.fn(),
     findFirst: jest.fn(),
     findMany: jest.fn(),
   }
+  // #345 — breaker evaluation runs on every tick. With no OPEN breaker the
+  // evaluation must pass through as a closed circuit so batches proceed.
+  mockDb.agentCircuitBreaker = {
+    findMany: jest.fn().mockResolvedValue([]),
+    create: jest.fn().mockResolvedValue({ id: 'bk' }),
+    update: jest.fn().mockResolvedValue({ id: 'bk' }),
+  }
+  mockDb.protocolRate = {
+    findFirst: jest.fn().mockResolvedValue({ fetchedAt: new Date() }),
+  }
+  mockDb.yieldSnapshot = { findMany: jest.fn().mockResolvedValue([]) }
+  mockDb.rebalanceDecision = { groupBy: jest.fn().mockResolvedValue([]) }
 })
 
 // ─── 2. No-follow regression ─────────────────────────────────────────────────

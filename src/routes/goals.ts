@@ -12,6 +12,7 @@
  */
 import { Router } from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { userIdParamSchema } from '../validators/common-validators'
 import {
@@ -26,12 +27,15 @@ import {
   cancelGoalHandler,
   getGoalProgressHandler,
 } from '../controllers/goal-controller'
+import { simulateGoalHandler } from '../controllers/goal-simulation-controller'
+import { simulateGoalSchema } from '../validators/simulation-validators'
 
 const router = Router()
 
 router.post(
   '/',
   requireAuth,
+  requireScope('goals:write'),
   validate({ body: createGoalSchema }),
   createGoalHandler
 )
@@ -47,6 +51,7 @@ router.get(
 router.patch(
   '/:id',
   requireAuth,
+  requireScope('goals:write'),
   validate({ params: goalIdParamSchema, body: updateGoalSchema }),
   updateGoalHandler
 )
@@ -54,6 +59,7 @@ router.patch(
 router.delete(
   '/:id',
   requireAuth,
+  requireScope('goals:write'),
   validate({ params: goalIdParamSchema }),
   cancelGoalHandler
 )
@@ -63,6 +69,21 @@ router.get(
   requireAuth,
   validate({ params: goalIdParamSchema }),
   getGoalProgressHandler
+)
+
+/**
+ * POST /:id/simulate — Monte Carlo goal attainment probability (#319).
+ *
+ * Owner-scoped: the caller must own the goal. Returns attainment probability,
+ * percentile bands, sensitivity table, and an isSimulation disclaimer.
+ * Insufficient history returns an explicit insufficient_history outcome,
+ * not a guessed probability.
+ */
+router.post(
+  '/:id/simulate',
+  requireAuth,
+  validate(simulateGoalSchema),
+  simulateGoalHandler
 )
 
 export default router

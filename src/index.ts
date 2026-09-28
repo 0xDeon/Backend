@@ -25,10 +25,15 @@ import yaml from 'js-yaml'
 import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { correlationIdMiddleware } from './middleware/correlationId'
+import {
+  errorResponseMiddleware,
+  notFoundHandler,
+} from './middleware/errorResponse'
 import { requestLogger } from './middleware/logger'
 import { requestTimeoutMiddleware } from './middleware/requestTimeout'
 import {
   rateLimiter,
+  tieredRateLimiter,
   authRateLimiter,
   adminRateLimiter,
   internalRateLimiter,
@@ -54,15 +59,18 @@ import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
 import { scheduleOutboxDispatcher } from './outbox/dispatcher'
+import { startFeeOracle, stopFeeOracle } from './stellar/feeOracle'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
+import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
 import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
+import agentDecisionsRouter from './routes/agent-decisions'
 import authRouter from './routes/auth'
 import whatsappRouter from './routes/whatsapp'
 import telegramRouter from './routes/telegram'
@@ -83,18 +91,21 @@ import recurringDepositRouter from './routes/recurring-deposits'
 import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
+import assistantRouter from './routes/assistant'
 import approvalsRouter from './routes/approvals'
 import approvalPoliciesRouter from './routes/approval-policies'
 import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
+import networkRouter from './routes/network'
 import {
   corsMiddleware,
   jsonBodyParser,
   payloadSizeErrorHandler,
   urlencodedBodyParser,
   contentTypeRestrictionMiddleware,
+  validateCorsConfig,
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
@@ -127,9 +138,26 @@ let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 let approvalExpiryHandle: NodeJS.Timeout | null = null
+let reserveReconciliationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
+}
+
+// ── Configuration validation ──────────────────────────────────────────────────
+
+// A production or staging deployment that cannot enforce a CORS allowlist must
+// not start: every browser request would 403, and shipping that as a
+// half-working service is worse than failing loudly at boot (#471).
+try {
+  validateCorsConfig()
+} catch (error) {
+  logger.error(
+    `[CORS] Fatal startup error: ${
+      error instanceof Error ? error.message : String(error)
+    }`
+  )
+  process.exit(1)
 }
 
 // ── Express app ───────────────────────────────────────────────────────────────
@@ -141,6 +169,12 @@ configureTrustProxy(app)
 // ── Security and parsing middleware ───────────────────────────────────────────
 
 app.disable('x-powered-by')
+// Correlation ID — must run first so every response, including early
+// rejections from CORS / body parsing / rate limiting, carries X-Request-ID.
+app.use(correlationIdMiddleware)
+// Standard error envelope — wraps res.json so every later 4xx/5xx response
+// (including CORS, body parsing, auth and rate limiting) shares one shape.
+app.use(errorResponseMiddleware)
 app.use(securityHeaders())
 app.use(permissionsPolicy())
 app.use(corsMiddleware)
@@ -155,9 +189,6 @@ app.use(
 )
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
-
-// Correlation ID — must run before requestLogger
-app.use(correlationIdMiddleware)
 
 // ── User context propagation ──────────────────────────────────────────────────
 //
@@ -181,6 +212,13 @@ app.use((req: Request & { user?: { id: string } }, _res: Response, next) => {
 app.use(requestLogger)
 app.use(trustedIpBypass)
 app.use(rateLimiter)
+// #473 — identity tiering. This single limiter charges anonymous callers to a
+// strict per-IP budget and authenticated callers to a generous per-principal one
+// (see tieredRateLimiter). It resolves identity from the request itself, so it
+// works here, ahead of each route's auth middleware: API keys are self-
+// describing in the Authorization header, and session tokens are classified once
+// the auth middleware has resolved req.userId.
+app.use(tieredRateLimiter)
 app.use(requestTimeoutMiddleware)
 
 // Advertise the served API version on every response — must be registered
@@ -236,7 +274,7 @@ const UNVERSIONED_SUNSET = new Date(
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
 let swaggerSpec: Record<string, unknown> | null = null
-const specPath = path.join(process.cwd(), 'docs', 'openapi.yaml')
+const specPath = path.join(__dirname, 'docs', 'openapi.yaml')
 
 try {
   const specFile = fs.readFileSync(specPath, 'utf8')
@@ -290,6 +328,8 @@ interface ApiRoute {
 }
 
 const apiRoutes: ApiRoute[] = [
+  { path: 'network', handlers: [networkRouter] },
+  { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
@@ -308,6 +348,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
+  { path: 'assistant', handlers: [assistantRouter] },
   { path: 'approvals', handlers: [approvalsRouter] },
   { path: 'approval-policies', handlers: [approvalPoliciesRouter] },
   { path: 'keys', handlers: [keysRouter] },
@@ -334,6 +375,9 @@ for (const route of apiRoutes) {
 for (const route of apiRoutes) {
   app.use(`/api/${route.path}`, deprecatedApiWarning, ...route.handlers)
 }
+
+// 404 for unmatched routes — after all routers, before the error handlers
+app.use(notFoundHandler)
 
 // 413 handler — must be after body parsers, before generic error handler
 app.use(payloadSizeErrorHandler)
@@ -430,6 +474,17 @@ async function gracefulShutdown(signal: string): Promise<void> {
     approvalExpiryHandle = null
     logger.info('[Shutdown] Approval expiry sweep timer cleared')
   }
+
+  if (reserveReconciliationHandle) {
+    clearInterval(reserveReconciliationHandle)
+    reserveReconciliationHandle = null
+    logger.info('[Shutdown] Reserve reconciliation timer cleared')
+  }
+
+  try {
+    stopFeeOracle()
+    logger.info('[Shutdown] Fee oracle stopped')
+  } catch {}
 
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
@@ -549,6 +604,19 @@ async function initServices(): Promise<void> {
     })
     throw new Error(`AgentLoop: ${msg}`)
   }
+
+  // 4. Fee oracle (#342) — best-effort, never blocks startup
+  try {
+    await startFeeOracle()
+    logger.info('[Startup] Fee oracle started ✓')
+  } catch (error) {
+    logger.error(
+      '[Startup] Fee oracle failed to start — continuing with defaults',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
+  }
 }
 
 async function main(): Promise<void> {
@@ -624,6 +692,7 @@ async function main(): Promise<void> {
   attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
   approvalExpiryHandle = scheduleApprovalExpiry()
+  reserveReconciliationHandle = scheduleReserveReconciliation()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

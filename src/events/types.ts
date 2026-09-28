@@ -37,10 +37,18 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
 export const SOCKET_ONLY_EVENT_TYPES = [
   /** Emitted alongside agent.rebalanced: this user's positions moved. */
   'portfolio.updated',
+  /** #343 — a rebalance decision was recorded; deep-linkable explanation. */
+  'agent.decision_recorded',
+  /** #345 — the agent circuit breaker tripped; rebalancing paused (reason: plain text). */
+  'agent.circuit_breaker_tripped',
+  /** #345 — the agent circuit breaker reset; rebalancing may resume. */
+  'agent.circuit_breaker_reset',
   /** #374 — API key lifecycle notifications. */
   'security.api_key_changed',
   /** #376 — new session sign-in alert. */
   'security.new_session',
+  /** #472 — a session was revoked (logout, admin, or refresh-token reuse). */
+  'security.session_revoked',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -74,12 +82,16 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'approval.expired': 'transactions',
   'approval.cancelled': 'transactions',
   'agent.rebalanced': 'agent',
+  'agent.decision_recorded': 'agent',
+  'agent.circuit_breaker_tripped': 'agent',
+  'agent.circuit_breaker_reset': 'agent',
   'alert_rule.triggered': 'alerts',
   'strategy.updated': 'strategies',
   'strategy.unpublished': 'strategies',
   'portfolio.updated': 'portfolio',
   'security.api_key_changed': 'alerts',
   'security.new_session': 'alerts',
+  'security.session_revoked': 'alerts',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)

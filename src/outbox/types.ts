@@ -12,6 +12,7 @@ export type OutboxOpKind =
   | 'RECURRING_DEPOSIT'
   | 'REFERRAL_REWARD'
   | 'YIELD_CLAIM'
+  | 'ACCOUNT_PROVISION'
 
 export type OutboxOpActor = 'USER' | 'AGENT' | 'SYSTEM'
 
@@ -55,7 +56,31 @@ export type OutboxPayload =
       amount: number
       assetSymbol: string
       conversionId: string
-      leg: 'owner' | 'referred'
+      leg: 'owner' | 'referred' | 'tier2'
+    }
+  | {
+      method: 'sponsor_create_account'
+      sponsoredId: string
+      sponsorAccount: string
+      newAccountId: string
+      ledgerKey: string
+      xlmReserved: string
+    }
+  | {
+      method: 'sponsor_trustline'
+      sponsoredId: string
+      sponsorAccount: string
+      accountId: string
+      assetCode: string
+      assetIssuer: string
+      ledgerKey: string
+      xlmReserved: string
+    }
+  | {
+      method: 'revoke_sponsorship'
+      sponsoredId: string
+      sponsorAccount: string
+      ledgerKey: string
     }
 
 export interface OutboxOpRecord {
@@ -86,4 +111,5 @@ export const PRIORITY_BY_KIND: Record<OutboxOpKind, OutboxPriority> = {
   REFERRAL_REWARD: 'NORMAL',
   YIELD_CLAIM: 'NORMAL',
   REBALANCE: 'LOW',
+  ACCOUNT_PROVISION: 'LOW',
 }

@@ -7,7 +7,7 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { recordAuthFailure } from '../utils/metrics'
 
-const prisma = db as any
+const prisma = db
 
 // ── Scope enum (#215) ──────────────────────────────────────────────────────
 
@@ -35,6 +35,13 @@ export const ADMIN_SCOPES = [
   // #314 — admin cancellation of a PENDING_APPROVAL request (the issue's
   // "requester or admin" cancel rule).
   'approvals:write',
+  // #397 — review FLAGGED referral conversions (approve/reject a
+  // fraud-heuristic hold) without granting broader write access.
+  'referrals:read',
+  'referrals:write',
+  // #394 — GDPR/CCPA right-to-erasure
+  'erasure:write',
+  'erasure:read',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]

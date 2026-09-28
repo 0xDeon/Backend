@@ -7,6 +7,7 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob, recordRetentionDeletes } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import {
   appendAuditBlock,
   aggregatePayloadHash,
@@ -92,7 +93,7 @@ export async function cleanupAuthNonces(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -150,7 +151,7 @@ export async function cleanupProcessedEvents(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -200,7 +201,7 @@ export async function cleanupDeadLetterEvents(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -258,7 +259,7 @@ export async function cleanupAgentLogs(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -322,7 +323,7 @@ export async function cleanupUserEvents(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -340,24 +341,44 @@ export async function runAllRetentionJobs(): Promise<void> {
       correlationId,
     })
 
-    try {
-      await cleanupAuthNonces()
-      await cleanupProcessedEvents()
-      await cleanupDeadLetterEvents()
-      await cleanupAgentLogs()
-      await cleanupUserEvents()
+    const steps: Array<[string, () => Promise<void>]> = [
+      ['retention_auth_nonces', cleanupAuthNonces],
+      ['retention_processed_events', cleanupProcessedEvents],
+      ['retention_dead_letter_events', cleanupDeadLetterEvents],
+      ['retention_agent_logs', cleanupAgentLogs],
+      ['retention_user_events', cleanupUserEvents],
+    ]
+    const failures: string[] = []
 
-      const duration = (Date.now() - startTime) / 1000
-      logBackgroundJob(jobName, 'success', duration, correlationId)
-    } catch (error) {
-      const duration = (Date.now() - startTime) / 1000
-      const errorMessage =
-        error instanceof Error ? error.message : 'Unknown error'
+    for (const [name, step] of steps) {
+      try {
+        await step()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push(`${name}: ${message}`)
+      }
+    }
 
+    const durationMs = Date.now() - startTime
+    const duration = durationMs / 1000
+
+    if (failures.length > 0) {
+      const errorMessage = failures.join('; ')
       logBackgroundJob(jobName, 'failed', duration, correlationId, {
         error: errorMessage,
+        failedJobs: failures.length,
       })
+      recordJobFailure(
+        jobName,
+        durationMs,
+        new Error(
+          `Retention sweep incomplete (${failures.length} job(s)): ${errorMessage}`
+        )
+      )
     }
+
+    logBackgroundJob(jobName, 'success', duration, correlationId)
+    recordJobSuccess(jobName, durationMs)
   })
 }
 
@@ -368,8 +389,11 @@ export async function runAllRetentionJobs(): Promise<void> {
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleDataRetention(): NodeJS.Timeout {
-  runAllRetentionJobs()
-  const handle = setInterval(runAllRetentionJobs, config.retention.intervalMs)
+  const handle = scheduleResilientJob({
+    jobName: 'retention_all_jobs',
+    task: runAllRetentionJobs,
+    intervalMs: config.retention.intervalMs,
+  })
   logger.info(
     `[DataRetention] Retention jobs scheduled every ${config.retention.intervalMs / 3600000}h` +
       ` (processed_events=${config.retention.processedEventsDays}d,` +

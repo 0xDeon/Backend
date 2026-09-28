@@ -5,6 +5,7 @@ import {
   runWithCorrelationIdAsync,
 } from '../utils/correlation'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { config } from '../config/env'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
@@ -342,7 +343,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
       logBackgroundJob(jobName, 'failed', durationMs / 1000, correlationId, {
         error: errorMessage,
       })
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -354,17 +355,15 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleAlertRules(): NodeJS.Timeout {
-  void runAlertRules()
-
-  const intervalMs = config.alertRules.intervalMs
-  const handle = setInterval(() => {
-    void runAlertRules()
-  }, intervalMs)
-
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'alert_rules',
+    task: runAlertRules,
+    intervalMs: config.alertRules.intervalMs,
+    unref: true,
+  })
 
   logger.info(
-    `[AlertRules] Alert-rule evaluation scheduled every ${intervalMs}ms`
+    `[AlertRules] Alert-rule evaluation scheduled every ${config.alertRules.intervalMs}ms`
   )
   return handle
 }

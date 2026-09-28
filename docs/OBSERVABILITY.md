@@ -5,6 +5,7 @@ This document provides production-grade observability guidance including alert t
 **Related Documentation**:
 - **SLO Guidance**: See `docs/SLO_GUIDANCE.md` for latency budgets and performance targets
 - **Runbook**: See `docs/RUNBOOK.md` for incident response procedures
+- **Incident response**: See `docs/INCIDENT_RESPONSE.md` for alert runbooks, escalation timers, and the postmortem workflow
 
 ## Overview
 
@@ -16,6 +17,26 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 - Database operation performance
 - HTTP request metrics
 - Analytics API performance
+
+## Request Correlation IDs
+
+Every HTTP request is assigned a request ID by `correlationIdMiddleware`
+(`src/middleware/correlationId.ts`), which is registered **first** in the
+middleware chain so that early rejections (CORS, body parsing, rate limiting)
+are also correlated.
+
+| Where | How the ID appears |
+|---|---|
+| Inbound | A valid client-supplied `X-Request-ID` (or `X-Correlation-ID`) is reused; otherwise a UUID v4 is generated. IDs must match `^[A-Za-z0-9_-]{1,128}$`. |
+| Response | `X-Request-ID` header on every response (exposed via CORS), plus `requestId` in every error body. |
+| Logs | Winston injects `correlationId` from AsyncLocalStorage, and `traceId` / `spanId` from the active OpenTelemetry span. |
+| Traces | The active HTTP span gets the `http.request_id` attribute; failed requests also get `correlation.id`. |
+| Sentry | 5xx events are tagged `correlation_id`. |
+| Downstream | Call `correlationHeaders()` from `src/utils/correlation.ts` to forward `X-Request-ID` on outbound HTTP calls (`fetchWithRetry` does this automatically). |
+
+To debug a failed request, take the `requestId` from the error body and search
+logs for `correlationId`, or search traces for `http.request_id`. The log line's
+`traceId` links directly to the full trace.
 
 ## Prometheus Metrics
 
@@ -48,6 +69,24 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 - `agent_rebalances_triggered_total` - Counter
 - `agent_snapshot_duration_seconds` - Histogram
 
+### Agent Circuit Breaker Metrics (#345)
+
+- `agent_breaker_state` - Gauge, labels `scope` (`GLOBAL`|`PROTOCOL`|`USER`) and `scopeKey`; 0 = CLOSED, 1 = HALF_OPEN, 2 = OPEN. Written every agent breaker evaluation tick and on every transition.
+- `agent_breaker_trips_total` - Counter, labels `scope`, `rule` (`abnormal_loss`|`depeg`|`oscillation`|`stale_data`|`manual`). Increments whenever a breaker trips or re-trips.
+
+Query examples:
+
+```
+# Any circuit breaker open right now
+agent_breaker_state == 2
+
+# Global halt (stops all agent rebalancing)
+agent_breaker_state{scope="GLOBAL"} == 2
+
+# Breaker trip rate by rule
+sum(rate(agent_breaker_trips_total[15m])) by (rule)
+```
+
 ### Database Metrics
 
 - `db_operation_duration_seconds` - Histogram with label: `operation`
@@ -74,6 +113,7 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 | `cursor_lag_ledgers` | `> 100` | Critical | Event processing lagging significantly |
 | `dlq_size` | `> 50` | Critical | Dead Letter Queue critically large |
 | `failures_total` (rate) | `> 10 per minute` for 5m | Critical | High failure rate |
+| `agent_breaker_state{scope="GLOBAL"}` | `== 2` for 1m | Critical | Global circuit breaker OPEN — all rebalancing halted |
 
 ### Warning Alerts (Investigate Within 1 Hour)
 
@@ -85,6 +125,7 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 | `events_processing_duration_seconds` (p95) | `> 2 seconds` | Warning | Event processing slow |
 | `db_operation_duration_seconds` (p95) | `> 1 second` | Warning | Database operations slow |
 | `http_request_duration_seconds` (p95) | `> 5 seconds` | Warning | HTTP requests slow |
+| `agent_breaker_state{scope!="GLOBAL"}` | `== 2` for 2m | Warning | Protocol or user breaker OPEN — affected rebalancing halted |
 
 ### Info Alerts (Monitor Trend)
 

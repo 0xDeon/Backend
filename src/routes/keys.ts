@@ -9,6 +9,7 @@ import {
   deriveApiKeyPrefix,
   requireSessionAuth,
 } from '../middleware/apiKeyAuth'
+import { sensitiveRateLimiter } from '../middleware/rateLimiter'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import { config } from '../config'
@@ -38,6 +39,9 @@ const keyIdParamSchema = z.object({
 /** POST /api/v1/keys — create a scoped API key; secret shown once. */
 router.post(
   '/',
+  // #473 — minting a credential is a takeover vector, so it gets the sensitive
+  // budget: a burst of key creation is a hijack attempt, not a user clicking.
+  sensitiveRateLimiter,
   validate({ body: createKeySchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -185,6 +189,7 @@ router.delete(
 /** POST /api/v1/keys/:id/rotate — issue new secret, invalidate old. */
 router.post(
   '/:id/rotate',
+  sensitiveRateLimiter,
   validate({ params: keyIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId

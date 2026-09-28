@@ -6,12 +6,12 @@ import { requireSessionAuth } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import { maskIpAddress } from '../utils/geoip'
-import { closeUserSockets } from '../ws/server'
+import { revokeSession } from '../services/refresh-token.service'
 import { stellarVerification } from '../utils/stellar/stellar-verification'
 import { logger } from '../utils/logger'
 
 const router = Router()
-const prisma = db as any
+const prisma = db
 
 router.use(requireAuth)
 router.use(requireSessionAuth)
@@ -96,12 +96,13 @@ router.delete(
     })
     if (!existing) return sendNotFound(res, 'Session')
 
-    await prisma.session.update({
-      where: { id: req.params.id },
-      data: { revokedAt: new Date(), revokedReason: 'user' },
+    // #472: revokeSession() clears the refresh material, so a refresh token
+    // captured before this call cannot resurrect the session.
+    await revokeSession(req.params.id, 'user', {
+      userId,
+      deviceType: existing.deviceType,
+      approxLocation: existing.approxLocation,
     })
-
-    closeUserSockets(userId, 'Session revoked')
 
     const isCurrent = req.params.id === currentSessionId
     return res.status(200).json({
@@ -138,23 +139,35 @@ router.post(
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
-    const result = await prisma.session.updateMany({
+    // #472: revoke every other session's refresh material too, not just the
+    // row flag. updateMany cannot express the per-row column reset that
+    // revokeSession() performs, so do it in one statement and let the service's
+    // semantics (clear refresh columns, stamp revokedAt) apply to all rows.
+    const others = await prisma.session.findMany({
       where: {
         userId,
         id: { not: currentSessionId },
         revokedAt: null,
       },
-      data: { revokedAt: new Date(), revokedReason: 'logout_others' },
+      select: { id: true, deviceType: true, approxLocation: true },
     })
 
-    closeUserSockets(userId, 'Other sessions revoked')
+    await Promise.all(
+      others.map((session) =>
+        revokeSession(session.id, 'logout_others', {
+          userId,
+          deviceType: session.deviceType,
+          approxLocation: session.approxLocation,
+        })
+      )
+    )
 
     logger.info('[Sessions] Revoke-others completed', {
       userId,
-      count: result.count,
+      count: others.length,
     })
 
-    return res.status(200).json({ revokedCount: result.count })
+    return res.status(200).json({ revokedCount: others.length })
   }
 )
 

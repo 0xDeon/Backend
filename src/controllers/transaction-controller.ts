@@ -11,6 +11,7 @@ import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { OutboxOpKind } from '../outbox/types'
 import { guardOperation } from '../approvals/service'
+import { getFeeSnapshot } from '../stellar/feeOracle'
 
 /**
  * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
@@ -265,6 +266,15 @@ export interface ExecuteWithdrawResult {
 }
 
 /**
+ * Core withdraw logic, extracted from the WITHDRAWAL branch of
+ * processOnChainTransaction so it has a callable service-layer entry point
+ * (the deposit side already had one via executeDeposit). Used by the HTTP
+ * route below and by the assistant's withdraw tool
+ * (src/agent/tools/actionTools.ts) — the assistant must go through the exact
+ * same idempotent/audited path as every other caller, never a bespoke one.
+ */
+
+/**
  * Core withdrawal logic, mirroring executeDeposit. Extracted so both the
  * HTTP withdraw route and the approval service's post-approval execution
  * path (src/approvals/executors.ts) run through the exact same gate and
@@ -427,6 +437,21 @@ export async function processOnChainTransaction(
       status: transaction.status,
     })
 
+    // Fee oracle estimate for honest UI numbers
+    const snapW = getFeeSnapshot()
+    const estFeeW =
+      snapW.congestionLevel === 'low'
+        ? snapW.recommendedBaseFee
+        : snapW.aggressiveBaseFee
+    const etaW =
+      snapW.congestionLevel === 'severe'
+        ? 15
+        : snapW.congestionLevel === 'high'
+          ? 10
+          : snapW.congestionLevel === 'elevated'
+            ? 6
+            : 4
+
     // Notification already dispatched inside executeWithdraw above — do not
     // re-publish here (that would double-fire transaction.confirmed).
     return res.status(transaction.status === 'PENDING' ? 202 : 201).json({
@@ -440,6 +465,8 @@ export async function processOnChainTransaction(
         assetSymbol: transaction.assetSymbol,
         protocolName: transaction.protocolName,
       },
+      estFee: estFeeW,
+      estConfirmationSeconds: etaW,
       whatsappReply: formatWithdrawReply({
         amount: Number(transaction.amount),
         assetSymbol: transaction.assetSymbol,
@@ -465,6 +492,16 @@ export async function processOnChainTransaction(
   }
 
   const transaction = result.transaction!
+  const snapD = getFeeSnapshot()
+  const estFeeD = snapD.recommendedBaseFee
+  const etaD =
+    snapD.congestionLevel === 'severe'
+      ? 30
+      : snapD.congestionLevel === 'high'
+        ? 20
+        : snapD.congestionLevel === 'elevated'
+          ? 12
+          : 8
   return res.status(transaction.status === 'PENDING' ? 202 : 201).json({
     txHash: transaction.txHash,
     status: transaction.status,
@@ -476,6 +513,8 @@ export async function processOnChainTransaction(
       assetSymbol: transaction.assetSymbol,
       protocolName: transaction.protocolName,
     },
+    estFee: estFeeD,
+    estConfirmationSeconds: etaD,
     whatsappReply: formatDepositReply({
       amount: Number(transaction.amount),
       assetSymbol: transaction.assetSymbol,

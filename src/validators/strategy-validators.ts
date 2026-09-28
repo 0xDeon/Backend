@@ -57,8 +57,36 @@ export const strategyLabelSchema = z
   })
 
 /**
+ * A per-protocol exposure cap override (#346): a maxFraction in (0,1] and/or a
+ * non-negative maxAbsolute. Validated here so a malformed cap set is rejected at
+ * write time with a named issue rather than wedging the agent loop later.
+ */
+const exposureCapOverrideSchema = z
+  .object({
+    maxFraction: z
+      .number()
+      .finite()
+      .gt(0, 'maxFraction must be greater than 0')
+      .lte(1, 'maxFraction must be at most 1')
+      .optional(),
+    maxAbsolute: z
+      .union([
+        z.number().finite().nonnegative(),
+        z
+          .string()
+          .regex(/^\d+(\.\d+)?$/, 'maxAbsolute must be a non-negative number'),
+      ])
+      .optional(),
+  })
+  .refine((v) => v.maxFraction !== undefined || v.maxAbsolute !== undefined, {
+    message: 'each exposure cap must define maxFraction and/or maxAbsolute',
+  })
+
+/**
  * The exact three keys the agent loop reads. Nothing else is copied to a
  * follower — notably `riskTolerance`, which stays personal to each user.
+ * `exposureCaps` and `defaultMaxFraction` (#346) are per-user risk controls and
+ * ARE copied under the tighten-only rule, so a valid cap set is required here.
  */
 export const publishableConfigSchema = z
   .object({
@@ -67,6 +95,15 @@ export const publishableConfigSchema = z
       .record(z.string().min(1).max(100), z.number().finite().min(0).max(100))
       .optional(),
     riskCeiling: z.number().int().min(0).max(100).optional(),
+    defaultMaxFraction: z
+      .number()
+      .finite()
+      .gt(0, 'defaultMaxFraction must be greater than 0')
+      .lte(1, 'defaultMaxFraction must be at most 1')
+      .optional(),
+    exposureCaps: z
+      .record(z.string().min(1).max(100), exposureCapOverrideSchema)
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.strategyName === 'TARGET_ALLOCATION') {
@@ -137,6 +174,57 @@ export const marketplaceQuerySchema = z.object({
 export const strategyIdParamSchema = z.object({
   id: z.string().uuid('Invalid strategy ID'),
 })
+
+/**
+ * POST /strategies/simulate (#344)
+ *
+ * Dry-run a hypothetical strategy config. `followStrategyId` is mutually
+ * exclusive with the inline `strategy`/`targetAllocations`/`riskCeiling`. The
+ * historical replay window is capped at SIMULATE_MAX_WINDOW_DAYS (180) to bound
+ * compute. TARGET_ALLOCATION weight-sum-to-100 is enforced in the service once
+ * the effective config is resolved (a follow may contribute allocations), so it
+ * is not duplicated here.
+ */
+export const strategySimulateSchema = z
+  .object({
+    strategy: z
+      .enum(['MAX_YIELD', 'TARGET_ALLOCATION', 'GOAL_TRACKING'])
+      .nullable()
+      .optional(),
+    targetAllocations: z
+      .record(z.string().min(1).max(100), z.number().finite().min(0).max(100))
+      .optional(),
+    riskCeiling: z.number().int().min(0).max(100).optional(),
+    followStrategyId: z
+      .string()
+      .uuid('Invalid strategy ID')
+      .nullable()
+      .optional(),
+    historyWindowDays: z
+      .number()
+      .int()
+      .min(1)
+      .max(180, 'historyWindowDays is capped at 180 days')
+      .default(90)
+      .optional(),
+    assumeInitialDeposit: z.boolean().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasInline =
+      data.strategy != null ||
+      data.targetAllocations !== undefined ||
+      data.riskCeiling !== undefined
+    if (data.followStrategyId && hasInline) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['followStrategyId'],
+        message:
+          'followStrategyId is mutually exclusive with inline strategy config',
+      })
+    }
+  })
+
+export type StrategySimulateInput = z.infer<typeof strategySimulateSchema>
 
 export type PublishStrategyInput = z.infer<typeof publishStrategySchema>
 export type MarketplaceQuery = z.infer<typeof marketplaceQuerySchema>

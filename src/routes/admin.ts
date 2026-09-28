@@ -16,11 +16,17 @@ import { logger } from '../utils/logger'
 import { requireAdminAuth, requireAdminScope } from '../middleware/adminAuth'
 import { getAllProviderHealth, adminSetProviderCircuit } from '../fiat/registry'
 import db from '../db'
+import { revokeSession } from '../services/refresh-token.service'
 import { alertingService } from '../services/alerting'
 import { verifyAuditChain } from '../audit/chain'
+import {
+  listBreakers,
+  manualTripBreaker,
+  manualResetBreaker,
+} from '../agent/breakerService'
 
 const router = Router()
-const prisma = db as any
+const prisma = db
 
 function auditLog(
   req: Request,
@@ -1213,6 +1219,166 @@ router.post(
 )
 
 /**
+ * GET /api/admin/referrals/flagged
+ * Lists referral conversions the fraud heuristic held for manual review
+ * (#397) instead of auto-activating. Required scope: referrals:read
+ */
+router.get(
+  '/referrals/flagged',
+  requireAdminScope('referrals:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { listFlaggedConversions } = await import('../referral/service')
+      const flagged = await listFlaggedConversions()
+      auditLog(req, res, 'LIST_FLAGGED_REFERRALS', 'success', {
+        count: flagged.length,
+      })
+      res.status(200).json({ success: true, data: flagged })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_FLAGGED_REFERRALS', 'failure', {
+        error: message,
+      })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/referrals/:id/review
+ * Resolves a FLAGGED referral conversion (#397) — body: { "decision":
+ * "approve" | "reject" }. Approving activates it exactly as an unflagged
+ * conversion would have; rejecting moves it to EXPIRED so it can never be
+ * paid out. Required scope: referrals:write
+ */
+router.post(
+  '/referrals/:id/review',
+  requireAdminScope('referrals:write'),
+  async (req: Request, res: Response) => {
+    const { decision } = req.body ?? {}
+    if (decision !== 'approve' && decision !== 'reject') {
+      return res.status(400).json({
+        success: false,
+        error: 'decision must be "approve" or "reject"',
+      })
+    }
+
+    try {
+      const { resolveFlaggedConversion } = await import('../referral/service')
+      const adminAuth = res.locals.adminAuth
+      await resolveFlaggedConversion(
+        req.params.id,
+        decision,
+        adminAuth?.id ?? 'admin'
+      )
+      auditLog(req, res, 'REFERRAL_REVIEW', 'success', {
+        conversionId: req.params.id,
+        decision,
+      })
+      res
+        .status(200)
+        .json({ success: true, data: { id: req.params.id, decision } })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'REFERRAL_REVIEW', 'failure', {
+        conversionId: req.params.id,
+        decision,
+        error: message,
+      })
+      // Not-found / wrong-state errors from resolveFlaggedConversion are
+      // caller mistakes (stale UI, double-submit), not server failures.
+      res.status(409).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/erasure — erase user data per GDPR/CCPA right-to-erasure
+ * Required scope: erasure:write
+ *
+ * Body: { userId: string, dryRun?: boolean }
+ *
+ * Trigger erasure job that walks erasurePolicies and applies DELETE/ANONYMIZE
+ * per model while leaving IMMUTABLE tables (audit chain, outbox) untouched.
+ *
+ * dryRun mode reports what would be deleted/anonymized without writing.
+ */
+router.post(
+  '/erasure',
+  requireAdminScope('erasure:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { userId, dryRun = false } = req.body as {
+        userId: string
+        dryRun?: boolean
+      }
+
+      if (!userId || typeof userId !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'userId is required and must be a string',
+        })
+      }
+
+      let results
+      if (dryRun) {
+        results = await import('../jobs/erasureJob').then((m) =>
+          m.erasureJob(userId, true)
+        )
+      } else {
+        results = await import('../jobs/erasureJob').then((m) =>
+          m.erasureJob(userId, false)
+        )
+      }
+
+      auditLog(
+        req,
+        res,
+        'ERASURE_' + (dryRun ? 'DRY_RUN' : 'EXECUTE'),
+        'success',
+        {
+          userId,
+          dryRun,
+          modelCount: results.length,
+        }
+      )
+
+      res.status(200).json({
+        success: true,
+        data: {
+          userId,
+          dryRun,
+          results,
+          timestamp: new Date().toISOString(),
+        },
+        message: dryRun
+          ? 'Dry-run complete — no data was modified'
+          : 'Erasure operation complete — user data has been erased per policies',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Erasure operation failed', {
+        error: message,
+        userId: req.body?.userId,
+      })
+      auditLog(
+        req,
+        res,
+        'ERASURE_' + (req.body?.dryRun ? 'DRY_RUN' : 'EXECUTE'),
+        'failure',
+        {
+          error: message,
+          userId: req.body?.userId,
+        }
+      )
+      res
+        .status(500)
+        .json({ success: false, error: 'Erasure operation failed' })
+    }
+  }
+)
+
+/**
  * GET /api/admin/users/:id/sessions — list sessions for a user (#376)
  */
 router.get(
@@ -1259,26 +1425,385 @@ router.post(
   requireAdminScope('write'),
   async (req: Request, res: Response) => {
     try {
-      const result = await prisma.session.updateMany({
+      // #472: an admin kill-switch that only sets revokedAt leaves every
+      // outstanding refresh token live, so the user (or whoever captured one)
+      // can mint new access tokens after the admin has revoked them. revokeSession()
+      // clears the refresh material as part of the revoke.
+      const sessions = await prisma.session.findMany({
         where: { userId: req.params.id, revokedAt: null },
-        data: { revokedAt: new Date(), revokedReason: 'admin' },
+        select: { id: true, deviceType: true, approxLocation: true },
       })
+
+      await Promise.all(
+        sessions.map((session) =>
+          revokeSession(session.id, 'admin', {
+            userId: req.params.id,
+            deviceType: session.deviceType,
+            approxLocation: session.approxLocation,
+          })
+        )
+      )
 
       auditLog(req, res, 'REVOKE_ALL_USER_SESSIONS', 'success', {
         userId: req.params.id,
-        count: result.count,
+        count: sessions.length,
         reason: req.body?.reason ?? 'admin_action',
       })
 
       res.status(200).json({
         success: true,
-        data: { revokedCount: result.count },
+        data: { revokedCount: sessions.length },
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       auditLog(req, res, 'REVOKE_ALL_USER_SESSIONS', 'failure', {
         error: message,
       })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/agent/decisions — unrestricted, admin-scoped decision listing (#343)
+ *
+ * Unrestricted visibility for support/audit: no affectedUserIds filter. Paginated
+ * and filterable by outcome / fromProtocol / date range. Always audit-logged.
+ */
+router.get(
+  '/agent/decisions',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const outcome = req.query.outcome as string | undefined
+      const fromProtocol = req.query.fromProtocol as string | undefined
+      const from = req.query.from as string | undefined
+      const to = req.query.to as string | undefined
+      const correlationId = req.query.correlationId as string | undefined
+      const batchKey = req.query.batchKey as string | undefined
+      const page = Math.max(
+        1,
+        parseInt((req.query.page as string) ?? '1', 10) || 1
+      )
+      const limit = Math.min(
+        50,
+        Math.max(1, parseInt((req.query.limit as string) ?? '10', 10) || 10)
+      )
+      const skip = (page - 1) * limit
+
+      const where: any = {}
+      if (outcome) where.outcome = outcome
+      if (fromProtocol) where.fromProtocol = fromProtocol
+      if (correlationId) where.correlationId = correlationId
+      if (batchKey) where.batchKey = batchKey
+      if (from || to) {
+        where.createdAt = {}
+        if (from) where.createdAt.gte = new Date(from)
+        if (to) where.createdAt.lte = new Date(to)
+      }
+
+      const [total, rows] = await Promise.all([
+        prisma.rebalanceDecision.count({ where }),
+        prisma.rebalanceDecision.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+        }),
+      ])
+
+      const toNum = (v: unknown): number | null => {
+        if (v === null || v === undefined) return null
+        if (typeof v === 'object' && v !== null && 'toNumber' in (v as any)) {
+          try {
+            return (v as any).toNumber()
+          } catch {
+            return Number(v as any)
+          }
+        }
+        const n = Number(v)
+        return Number.isFinite(n) ? n : null
+      }
+
+      // Outbox join for deep-link → failure context
+      const outboxIds = rows
+        .map((r: any) => r.outboxOpId)
+        .filter(Boolean) as string[]
+      let statusByOpId = new Map<string, string>()
+      if (outboxIds.length > 0) {
+        const ops = await prisma.outboxOp.findMany({
+          where: { id: { in: outboxIds } },
+          select: { id: true, status: true },
+        })
+        statusByOpId = new Map(ops.map((o: any) => [o.id, o.status]))
+      }
+
+      const decisions = rows.map((row: any) => ({
+        id: row.id,
+        correlationId: row.correlationId,
+        batchKey: row.batchKey,
+        fromProtocol: row.fromProtocol,
+        toProtocol: row.toProtocol ?? null,
+        outcome: row.outcome,
+        blockedReason: row.blockedReason ?? null,
+        strategyName: row.strategyName ?? null,
+        strategyIsFollowed: row.strategyIsFollowed,
+        followedStrategyId: row.followedStrategyId ?? null,
+        thresholds: row.thresholds,
+        currentApy: toNum(row.currentApy),
+        chosenApy: toNum(row.chosenApy),
+        rawImprovement: toNum(row.rawImprovement),
+        estCostPercent: toNum(row.estCostPercent),
+        netImprovement: toNum(row.netImprovement),
+        candidates: row.candidates ?? [],
+        rationale: row.rationale ?? null,
+        affectedUserIds: row.affectedUserIds,
+        affectedPositions: row.affectedPositions,
+        outboxOpId: row.outboxOpId ?? null,
+        outboxStatus: row.outboxOpId
+          ? (statusByOpId.get(row.outboxOpId) ?? null)
+          : null,
+        heldSince: row.heldSince ? new Date(row.heldSince).toISOString() : null,
+        lastEvaluatedAt: row.lastEvaluatedAt
+          ? new Date(row.lastEvaluatedAt).toISOString()
+          : null,
+        createdAt: new Date(row.createdAt).toISOString(),
+      }))
+
+      auditLog(req, res, 'LIST_AGENT_DECISIONS', 'success', {
+        total,
+        page,
+        limit,
+        filters: { outcome, fromProtocol, from, to, correlationId, batchKey },
+      })
+
+      res.status(200).json({ page, limit, total, decisions })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_AGENT_DECISIONS', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * GET /api/v1/admin/reserves — reserve sponsorship overview (#339)
+ * Admin-scoped, audit-logged.
+ */
+router.get(
+  '/reserves',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const rows: any[] = await prisma.reserveSponsorship.findMany({
+        where: { status: 'ACTIVE' },
+      })
+      const outstanding = rows.reduce(
+        (sum: number, r: any) => sum + Number(r.xlmReserved),
+        0
+      )
+
+      // per-sponsor balances (best-effort)
+      const bySponsor = new Map<string, { count: number; reserved: number }>()
+      for (const r of rows) {
+        const cur = bySponsor.get(r.sponsorAccount) ?? { count: 0, reserved: 0 }
+        cur.count++
+        cur.reserved += Number(r.xlmReserved)
+        bySponsor.set(r.sponsorAccount, cur)
+      }
+
+      const perSponsor: Array<{
+        sponsorAccount: string
+        activeCount: number
+        reservedXlm: number
+        availableXlm: number | null
+      }> = []
+      for (const [sponsorAccount, info] of bySponsor) {
+        let availableXlm: number | null = null
+        try {
+          const { getAccount } = await import('../stellar/client')
+          const acct: any = await getAccount(sponsorAccount).catch(() => null)
+          if (acct && acct.balances) {
+            const native = acct.balances.find(
+              (b: any) => b.asset_type === 'native'
+            )
+            const bal = native ? parseFloat(native.balance) : 0
+            const liab = native?.selling_liabilities
+              ? parseFloat(native.selling_liabilities)
+              : 0
+            availableXlm = bal - liab
+          }
+        } catch {}
+        perSponsor.push({
+          sponsorAccount,
+          activeCount: info.count,
+          reservedXlm: info.reserved,
+          availableXlm,
+        })
+      }
+
+      // drift is computed by reconciliation job; expose last known drift gauge
+      // For endpoint we recompute quickly: out-of-sync where ledger says gone
+      // For MVP return counts only, detailed drift is in job logs/alerts
+
+      auditLog(req, res, 'LIST_RESERVES', 'success', {
+        outstanding,
+        sponsors: perSponsor.length,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: {
+          outstandingXlm: outstanding,
+          perSponsor,
+          totalActive: rows.length,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_RESERVES', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+// ── Agent circuit breaker (#345) ─────────────────────────────────────────────
+
+/**
+ * GET /api/v1/admin/agent/breakers
+ * List every circuit breaker (GLOBAL / PROTOCOL / USER) with current state.
+ */
+router.get(
+  '/agent/breakers',
+  requireAdminScope('agent'),
+  async (req: Request, res: Response) => {
+    try {
+      const breakers = await listBreakers()
+      auditLog(req, res, 'LIST_AGENT_BREAKERS', 'success', {
+        count: breakers.length,
+      })
+      res.status(200).json({ success: true, data: breakers })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_AGENT_BREAKERS', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/agent/breakers
+ * Manually trip (open) a breaker: { scope, scopeKey?, reason }.
+ * GLOBAL has no scopeKey; PROTOCOL/USER require one.
+ */
+router.post(
+  '/agent/breakers',
+  requireAdminScope('agent'),
+  async (req: Request, res: Response) => {
+    try {
+      const { scope, scopeKey, reason } = req.body ?? {}
+
+      if (!['GLOBAL', 'PROTOCOL', 'USER'].includes(scope)) {
+        auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
+          error: 'invalid_scope',
+        })
+        res.status(400).json({
+          success: false,
+          error: 'scope must be GLOBAL, PROTOCOL or USER',
+        })
+        return
+      }
+
+      if (scope !== 'GLOBAL') {
+        if (typeof scopeKey !== 'string' || scopeKey.trim() === '') {
+          auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
+            error: 'missing_scope_key',
+          })
+          res.status(400).json({
+            success: false,
+            error: 'scopeKey is required for PROTOCOL and USER trips',
+          })
+          return
+        }
+      }
+
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
+          error: 'missing_reason',
+        })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+      const scopeKeyValue = scope === 'GLOBAL' ? '' : scopeKey.trim()
+      const result = await manualTripBreaker(
+        scope,
+        scopeKeyValue,
+        reason.trim(),
+        adminIdentity
+      )
+
+      auditLog(req, res, 'TRIP_AGENT_BREAKER', 'success', {
+        scope,
+        scopeKey: scopeKeyValue,
+        breakerId: result.id,
+      })
+      res.status(200).json({ success: true, data: result })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/agent/breakers/:id/reset
+ * Manually close (reset) a breaker: { reason }.
+ */
+router.post(
+  '/agent/breakers/:id/reset',
+  requireAdminScope('agent'),
+  async (req: Request, res: Response) => {
+    try {
+      const { reason } = req.body ?? {}
+
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'RESET_AGENT_BREAKER', 'failure', {
+          error: 'missing_reason',
+        })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+      const result = await manualResetBreaker(
+        req.params.id,
+        reason.trim(),
+        adminIdentity
+      )
+
+      if (!result) {
+        auditLog(req, res, 'RESET_AGENT_BREAKER', 'failure', {
+          error: 'not_found',
+          id: req.params.id,
+        })
+        res.status(404).json({ success: false, error: 'Breaker not found' })
+        return
+      }
+
+      auditLog(req, res, 'RESET_AGENT_BREAKER', 'success', {
+        breakerId: result.id,
+      })
+      res.status(200).json({ success: true, data: result })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'RESET_AGENT_BREAKER', 'failure', { error: message })
       res.status(500).json({ success: false, error: message })
     }
   }
