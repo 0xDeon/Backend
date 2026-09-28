@@ -1904,18 +1904,48 @@ model TreasurySweep {
 }
 
 model MultisigEnvelope {
-  id         String   @id @default(uuid())
-  sweepId    String?
-  publicKey  String
-  threshold  Int
-  signatures Json // collected signatures
-  status     String // PENDING | COLLECTING | READY | EXPIRED
-  expiresAt  DateTime
-  createdAt  DateTime @default(now())
+  id               String   @id @default(uuid())
+  sweepId          String?
+  publicKey        String
+  threshold        Int
+  signatures       Json // collected signatures
+  status           String // PENDING | COLLECTING | READY | EXPIRED
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+  /// The signer set version active when this envelope was opened (#528). A
+  /// rotation finalizing mid-collection never invalidates an in-flight
+  /// envelope — it keeps validating against the set it was opened under.
+  signerSetVersion Int      @default(1)
 
   @@index([status])
   @@index([expiresAt])
   @@map("multisig_envelopes")
+}
+
+enum SignerRotationStatus {
+  PENDING
+  DUAL_ACTIVE
+  FINALIZED
+  CANCELLED
+}
+
+/// Signer rotation with a dual-active window (#528): both the old and new
+/// key are valid signers from the moment a rotation is recorded, so signing
+/// capacity never drops below threshold mid-rotation. Only a DUAL_ACTIVE
+/// rotation may be finalized.
+model SignerRotation {
+  id                String               @id @default(uuid())
+  treasuryAccountId String
+  oldSignerKey      String
+  newSignerKey      String
+  status            SignerRotationStatus @default(PENDING)
+  dualActiveSince   DateTime?
+  finalizedAt       DateTime?
+  initiatedBy       String
+  createdAt         DateTime             @default(now())
+
+  @@index([treasuryAccountId, status])
+  @@map("signer_rotations")
 }
 
 /// Versioned, validated sweep policy for one tier pair (#528). A change never
