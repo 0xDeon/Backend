@@ -168,6 +168,31 @@ export const agentSnapshotDuration = new client.Histogram({
   registers: [register],
 })
 
+export const portfolioAnnualisedVolatilityPct = new client.Histogram({
+  name: 'portfolio_annualised_volatility_pct',
+  help: 'Annualised portfolio volatility observed by the rebalance circuit breaker, in percent',
+  buckets: [5, 10, 20, 30, 50, 75, 100, 150, 200],
+  registers: [register],
+})
+
+export const volatilityBreakerTripsTotal = new client.Counter({
+  name: 'portfolio_volatility_circuit_breaker_trips_total',
+  help: 'Total number of portfolio volatility circuit-breaker activations',
+  registers: [register],
+})
+
+export const volatilityBreakerActivePortfolios = new client.Gauge({
+  name: 'portfolio_volatility_circuit_breaker_active_portfolios',
+  help: 'Number of portfolios currently blocked by the volatility circuit breaker',
+  registers: [register],
+})
+
+export const volatilityBreakerEvaluationFailuresTotal = new client.Counter({
+  name: 'portfolio_volatility_circuit_breaker_evaluation_failures_total',
+  help: 'Total number of portfolio risk evaluations that failed closed',
+  registers: [register],
+})
+
 // ── Database Operation Metrics ──────────────────────────────────────────────────
 
 export const dbOperationDuration = new client.Histogram({
@@ -450,6 +475,22 @@ export function recordRebalanceCheck(status: 'success' | 'failed'): void {
  */
 export function recordRebalanceTriggered(): void {
   agentRebalancesTriggeredTotal.inc()
+}
+
+export function observePortfolioVolatility(volatilityPct: number): void {
+  portfolioAnnualisedVolatilityPct.observe(volatilityPct)
+}
+
+export function recordVolatilityBreakerTrip(): void {
+  volatilityBreakerTripsTotal.inc()
+}
+
+export function setVolatilityBreakerActivePortfolios(count: number): void {
+  volatilityBreakerActivePortfolios.set(count)
+}
+
+export function recordVolatilityBreakerEvaluationFailure(): void {
+  volatilityBreakerEvaluationFailuresTotal.inc()
 }
 
 /**

@@ -52,6 +52,7 @@ export type OutboxPayload =
     }
   | {
       method: 'referral_reward'
+      transactionId: string
       recipientAddress: string
       amount: number
       assetSymbol: string
