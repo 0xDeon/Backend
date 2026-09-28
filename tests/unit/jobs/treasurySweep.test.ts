@@ -1,6 +1,7 @@
 import {
   evaluateTreasuryBalances,
   executeSweep,
+  executeEmergencySweep,
   validateHysteresis,
 } from '../../../src/jobs/treasurySweep'
 import db from '../../../src/db'
@@ -14,6 +15,7 @@ jest.mock('../../../src/db', () => ({
     treasurySweepPolicy: { findFirst: jest.fn() },
     treasurySweep: { create: jest.fn(), update: jest.fn() },
     multisigEnvelope: { create: jest.fn() },
+    adminAuditLog: { create: jest.fn() },
   },
 }))
 jest.mock('../../../src/stellar/client', () => ({
@@ -153,5 +155,49 @@ describe('executeSweep', () => {
       })
     )
     expect(mockEnqueue).not.toHaveBeenCalled()
+  })
+})
+
+describe('executeEmergencySweep', () => {
+  it('enqueues without checking any policy requiresApprovalAbove', async () => {
+    mockDb.treasurySweep.create.mockResolvedValue({ id: 'sweep-3' })
+    mockDb.treasurySweep.update.mockResolvedValue({})
+    mockEnqueue.mockResolvedValue({ id: 'op-2' })
+
+    await executeEmergencySweep(
+      'HOT',
+      'COLD',
+      'XLM',
+      '1000000',
+      'admin-1',
+      'circuit_breaker_trip'
+    )
+
+    expect(mockDb.treasurySweepPolicy.findFirst).not.toHaveBeenCalled()
+    expect(mockEnqueue).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ kind: 'TREASURY_SWEEP', priority: 'CRITICAL' })
+    )
+  })
+
+  it('writes a distinct AdminAuditLog row', async () => {
+    mockDb.treasurySweep.create.mockResolvedValue({ id: 'sweep-4' })
+    mockDb.treasurySweep.update.mockResolvedValue({})
+    mockEnqueue.mockResolvedValue({ id: 'op-3' })
+
+    await executeEmergencySweep(
+      'WARM',
+      'COLD',
+      'XLM',
+      '500',
+      'admin-1',
+      'manual_admin_action'
+    )
+
+    expect(mockDb.adminAuditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'treasury.emergency_sweep' }),
+      })
+    )
   })
 })

@@ -139,6 +139,72 @@ export async function executeSweep(plan: SweepPlan): Promise<void> {
   })
 }
 
+/**
+ * Bypasses normal cadence, never the signing bar: no requiresApprovalAbove
+ * check, ever. Always full multisig threshold — the design's "emergency
+ * sweep changes cadence, never the signing bar" requirement. Triggered by
+ * admin action or the circuit breaker's manual-trip path.
+ */
+export async function executeEmergencySweep(
+  fromTier: TreasuryTier,
+  toTier: TreasuryTier,
+  asset: string,
+  amount: string,
+  triggeredBy: string,
+  reason: string
+): Promise<void> {
+  const sweep = await db.treasurySweep.create({
+    data: {
+      fromTier,
+      toTier,
+      asset,
+      amount,
+      status: 'PLANNED',
+      reason: `emergency:${reason}`,
+    },
+  })
+
+  const op = await enqueueOutboxOp(db, {
+    idempotencyKey: `TREASURY_SWEEP:EMERGENCY:${sweep.id}`,
+    userId: 'SYSTEM',
+    kind: 'TREASURY_SWEEP',
+    actor: 'SYSTEM',
+    priority: 'CRITICAL',
+    payload: {
+      method: 'treasury_sweep',
+      fromTier,
+      toTier,
+      asset,
+      amount: Number(amount),
+      sweepId: sweep.id,
+    },
+  })
+
+  await db.treasurySweep.update({
+    where: { id: sweep.id },
+    data: { outboxOpId: op.id, status: 'SUBMITTED' },
+  })
+
+  await db.adminAuditLog.create({
+    data: {
+      adminName: triggeredBy,
+      action: 'treasury.emergency_sweep',
+      target: sweep.id,
+      result: 'submitted',
+      details: { fromTier, toTier, asset, amount, reason },
+    },
+  })
+
+  logger.warn('[TreasurySweep] Emergency sweep executed', {
+    sweepId: sweep.id,
+    fromTier,
+    toTier,
+    amount,
+    triggeredBy,
+    reason,
+  })
+}
+
 export function validateHysteresis(
   targetLow: number,
   targetHigh: number
