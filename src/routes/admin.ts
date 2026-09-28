@@ -1851,4 +1851,134 @@ router.post(
   }
 )
 
+/**
+ * POST /api/admin/treasury/policies
+ * Creates a new (versioned) sweep policy for a tier pair. Required scope: treasury:write
+ */
+router.post(
+  '/treasury/policies',
+  requireAdminScope('treasury:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { createPolicyVersion } = await import('../treasury/policy')
+      const adminAuth = res.locals.adminAuth
+      const policy = await createPolicyVersion(
+        req.body,
+        adminAuth?.name ?? 'admin'
+      )
+      auditLog(req, res, 'TREASURY_POLICY_CREATE', 'success', {
+        fromTier: req.body.fromTier,
+        toTier: req.body.toTier,
+        version: policy.version,
+      })
+      res.status(201).json({
+        success: true,
+        data: policy,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'TREASURY_POLICY_CREATE', 'failure', {
+        error: message,
+      })
+      res.status(400).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/treasury/policies
+ * Lists active sweep policies. Required scope: treasury:read
+ */
+router.get(
+  '/treasury/policies',
+  requireAdminScope('treasury:read'),
+  async (_req: Request, res: Response) => {
+    try {
+      const policies = await db.treasurySweepPolicy.findMany({
+        where: { isActive: true },
+      })
+      res.status(200).json({
+        success: true,
+        data: policies,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/treasury/signer-rotations
+ * Initiates a signer rotation into DUAL_ACTIVE. Required scope: treasury:write
+ */
+router.post(
+  '/treasury/signer-rotations',
+  requireAdminScope('treasury:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { treasuryAccountId, oldSignerKey, newSignerKey } = req.body
+      const { initiateRotation } = await import('../treasury/signerRotation')
+      const adminAuth = res.locals.adminAuth
+      const rotation = await initiateRotation(
+        treasuryAccountId,
+        oldSignerKey,
+        newSignerKey,
+        adminAuth?.name ?? 'admin'
+      )
+      auditLog(req, res, 'TREASURY_SIGNER_ROTATION_INITIATE', 'success', {
+        rotationId: rotation.id,
+        treasuryAccountId,
+      })
+      res.status(201).json({
+        success: true,
+        data: rotation,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'TREASURY_SIGNER_ROTATION_INITIATE', 'failure', {
+        error: message,
+      })
+      res.status(400).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/treasury/signer-rotations/:id/finalize
+ * Finalizes a DUAL_ACTIVE rotation. Required scope: treasury:write
+ */
+router.post(
+  '/treasury/signer-rotations/:id/finalize',
+  requireAdminScope('treasury:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { finalizeRotation } = await import('../treasury/signerRotation')
+      const adminAuth = res.locals.adminAuth
+      const rotation = await finalizeRotation(
+        req.params.id,
+        adminAuth?.name ?? 'admin'
+      )
+      auditLog(req, res, 'TREASURY_SIGNER_ROTATION_FINALIZE', 'success', {
+        rotationId: req.params.id,
+      })
+      res.status(200).json({
+        success: true,
+        data: rotation,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'TREASURY_SIGNER_ROTATION_FINALIZE', 'failure', {
+        rotationId: req.params.id,
+        error: message,
+      })
+      res.status(400).json({ success: false, error: message })
+    }
+  }
+)
+
 export default router
