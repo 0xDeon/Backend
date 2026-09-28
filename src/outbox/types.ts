@@ -13,6 +13,7 @@ export type OutboxOpKind =
   | 'REFERRAL_REWARD'
   | 'YIELD_CLAIM'
   | 'ACCOUNT_PROVISION'
+  | 'TREASURY_SWEEP'
 
 export type OutboxOpActor = 'USER' | 'AGENT' | 'SYSTEM'
 
@@ -81,6 +82,14 @@ export type OutboxPayload =
       sponsorAccount: string
       ledgerKey: string
     }
+  | {
+      method: 'treasury_sweep'
+      fromTier: string
+      toTier: string
+      asset: string
+      amount: number
+      sweepId: string
+    }
 
 export interface OutboxOpRecord {
   id: string
@@ -111,4 +120,5 @@ export const PRIORITY_BY_KIND: Record<OutboxOpKind, OutboxPriority> = {
   YIELD_CLAIM: 'NORMAL',
   REBALANCE: 'LOW',
   ACCOUNT_PROVISION: 'LOW',
+  TREASURY_SWEEP: 'NORMAL',
 }
