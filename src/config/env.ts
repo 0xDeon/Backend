@@ -314,6 +314,22 @@ const bodySizeLimit = parseByteLimit(
 type NodeEnv = 'development' | 'staging' | 'production' | 'test'
 const nodeEnv = process.env.NODE_ENV as NodeEnv
 
+const marketVolatilityCircuitBreaker = {
+  enabled: process.env.MARKET_VOLATILITY_BREAKER_ENABLED !== 'false',
+  thresholdPct: Number(
+    process.env.MARKET_VOLATILITY_BREAKER_THRESHOLD_PCT ?? '75'
+  ),
+}
+
+if (
+  !Number.isFinite(marketVolatilityCircuitBreaker.thresholdPct) ||
+  marketVolatilityCircuitBreaker.thresholdPct <= 0
+) {
+  throw new Error(
+    'MARKET_VOLATILITY_BREAKER_THRESHOLD_PCT must be a finite number greater than 0'
+  )
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '3001'),
   nodeEnv,
@@ -544,6 +560,7 @@ export const config = {
   portfolioRisk: {
     intervalMs: parseInt(process.env.PORTFOLIO_RISK_INTERVAL_MS || '21600000'),
   },
+  marketVolatilityCircuitBreaker,
   alertRules: {
     intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
   },

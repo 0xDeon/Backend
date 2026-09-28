@@ -23,6 +23,7 @@ import {
   type ActiveFollowConfig,
 } from '../strategy/service'
 import type { StrategyName } from './types'
+import { isPortfolioRebalanceAllowed } from './volatilityCircuitBreaker'
 import db from '../db'
 import {
   updateAgentHeartbeat as metricsUpdateAgentHeartbeat,
@@ -127,6 +128,14 @@ async function rebalanceCheckJob(): Promise<void> {
       )
       const followsByUser = await loadActiveFollowsForUsers(userIds)
 
+      const volatilityAllowedByUser = new Map<string, boolean>()
+      for (const userId of userIds) {
+        volatilityAllowedByUser.set(
+          userId,
+          await isPortfolioRebalanceAllowed(userId)
+        )
+      }
+
       // Resolve each user's effective config once. With no follow this is the
       // user's own values read exactly as they were before #285 — the raw
       // strategyConfig fields, uncoerced — so the no-follow path stays a
@@ -191,7 +200,11 @@ async function rebalanceCheckJob(): Promise<void> {
       const thresholds = getThresholds()
 
       for (const batch of byProtocolAndStrategy.values()) {
-        const { protocol, positions: protocolPositions } = batch
+        const { protocol } = batch
+        const protocolPositions = batch.positions.filter((position) =>
+          volatilityAllowedByUser.get(position.userId)
+        )
+        if (protocolPositions.length === 0) continue
         const lead = effectiveByUser.get(protocolPositions[0].userId)!
 
         // HAZARD: this guard used to be `strategyName ? … : undefined`, and

@@ -77,6 +77,12 @@ jest.mock('../../../src/utils/logger', () => ({
 
 jest.mock('../../../src/db', () => ({ __esModule: true, default: {} }))
 
+jest.mock('../../../src/analytics/riskService', () => ({
+  getPortfolioRisk: jest.fn().mockResolvedValue({
+    metrics: { annualisedVolatility: null },
+  }),
+}))
+
 import db from '../../../src/db'
 import { rebalanceCheckJob } from '../../../src/agent/loop'
 

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { requireAuth } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
 import { processOnChainTransaction } from '../controllers/transaction-controller'
+import { onChainAmountSchema } from '../validators/common-validators'
 
 const router = Router()
 
@@ -11,7 +12,7 @@ const router = Router()
 // with optional protocol name and a short memo/note.
 const depositSchema = z.object({
   userId: z.string().uuid(),
-  amount: z.number().positive(),
+  amount: onChainAmountSchema,
   assetSymbol: z.string().min(1),
   protocolName: z.string().min(1).optional(),
   memo: z.string().max(280).optional(),
