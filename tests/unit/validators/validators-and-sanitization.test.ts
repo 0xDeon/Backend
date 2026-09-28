@@ -441,53 +441,49 @@ describe('pagination helpers (#498)', () => {
 })
 
 describe('errorResponse contract (#498)', () => {
-  it('emits the canonical error envelope with requestId and ISO timestamp', () => {
-    const res = buildErrorResponse('BAD_REQUEST', 'nope', 'req-1', {
+  it('emits the canonical flat envelope with status, requestId and ISO timestamp', () => {
+    const res = buildErrorResponse(400, 'BAD_REQUEST', 'nope', 'req-1', {
       field: 'amount',
     })
     expect(res).toMatchObject({
-      error: {
-        code: 'BAD_REQUEST',
-        message: 'nope',
-        details: { field: 'amount' },
-      },
+      status: 400,
+      code: 'BAD_REQUEST',
+      message: 'nope',
+      details: { field: 'amount' },
       requestId: 'req-1',
     })
+    // Legacy clients keep reading the deprecated `error` alias of `message`.
+    expect(res.error).toBe('nope')
     expect(new Date(res.timestamp).toISOString()).toBe(res.timestamp)
   })
 
   it('omits details when none are provided', () => {
-    const res = buildErrorResponse('NOT_FOUND', 'missing', 'req-2')
-    expect(res.error).not.toHaveProperty('details')
-    expect(res.error.code).toBe('NOT_FOUND')
+    const res = buildErrorResponse(404, 'NOT_FOUND', 'missing', 'req-2')
+    expect(res).not.toHaveProperty('details')
+    expect(res.code).toBe('NOT_FOUND')
+    expect(res.status).toBe(404)
   })
 
   it('maps every convenience builder to its canonical code', () => {
-    expect(ErrorResponses.badRequest('m', 'r').error.code).toBe(
+    expect(ErrorResponses.badRequest('m', 'r').code).toBe(
       ErrorCodes.BAD_REQUEST
     )
-    expect(ErrorResponses.unauthorized('m', 'r').error.code).toBe(
+    expect(ErrorResponses.unauthorized('m', 'r').code).toBe(
       ErrorCodes.UNAUTHORIZED
     )
-    expect(ErrorResponses.forbidden('m', 'r').error.code).toBe(
-      ErrorCodes.FORBIDDEN
-    )
-    expect(ErrorResponses.notFound('m', 'r').error.code).toBe(
-      ErrorCodes.NOT_FOUND
-    )
-    expect(ErrorResponses.conflict('m', 'r').error.code).toBe(
-      ErrorCodes.CONFLICT
-    )
-    expect(ErrorResponses.rateLimited('m', 'r').error.code).toBe(
+    expect(ErrorResponses.forbidden('m', 'r').code).toBe(ErrorCodes.FORBIDDEN)
+    expect(ErrorResponses.notFound('m', 'r').code).toBe(ErrorCodes.NOT_FOUND)
+    expect(ErrorResponses.conflict('m', 'r').code).toBe(ErrorCodes.CONFLICT)
+    expect(ErrorResponses.rateLimited('m', 'r').code).toBe(
       ErrorCodes.RATE_LIMITED
     )
-    expect(ErrorResponses.validationError('m', 'r').error.code).toBe(
+    expect(ErrorResponses.validationError('m', 'r').code).toBe(
       ErrorCodes.VALIDATION_ERROR
     )
-    expect(ErrorResponses.internalError('m', 'r').error.code).toBe(
+    expect(ErrorResponses.internalError('m', 'r').code).toBe(
       ErrorCodes.INTERNAL_ERROR
     )
-    expect(ErrorResponses.serviceUnavailable('m', 'r').error.code).toBe(
+    expect(ErrorResponses.serviceUnavailable('m', 'r').code).toBe(
       ErrorCodes.SERVICE_UNAVAILABLE
     )
   })

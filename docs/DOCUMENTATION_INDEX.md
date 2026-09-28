@@ -21,6 +21,9 @@
 ### For DevOps/Deployment
 
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete deployment guide for all environments
+- **[MIGRATIONS.md](MIGRATIONS.md)** - Schema change process (#470): change classification A–D, backup and downtime impact assessment, validation steps, rollback rehearsal, three rollback tiers, PR checklist
+- **[RUNBOOK.md](RUNBOOK.md)** - Production incident runbook, incl. §6 database migration rollback
+- **[DEPENDENCY_AUDIT.md](DEPENDENCY_AUDIT.md)** - Dependency inventory, security advisories, upgrade backlog and exceptions
 - **[IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md)** - Verification checklist
 
 ### For Reference

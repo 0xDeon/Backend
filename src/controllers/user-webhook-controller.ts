@@ -201,9 +201,9 @@ export async function updateEndpoint(
         ...(url && { url }),
         ...(events && Array.isArray(events) && { events }),
         ...(topicScope && Array.isArray(topicScope) && { topicScope }),
-        // Clearing the predicate must store SQL NULL (Prisma requires the
-        // DbNull sentinel for nullable Json columns — a plain `null` is not a
-        // valid update-input value).
+        // An explicit `null` means "clear the filter", which Prisma expresses as
+        // DbNull rather than a raw null (raw null is rejected by the input type
+        // and would otherwise silently no-op the update).
         ...(filterJson !== undefined && {
           filterJson: filterJson === null ? Prisma.DbNull : filterJson,
         }),

@@ -25,10 +25,15 @@ import yaml from 'js-yaml'
 import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { correlationIdMiddleware } from './middleware/correlationId'
+import {
+  errorResponseMiddleware,
+  notFoundHandler,
+} from './middleware/errorResponse'
 import { requestLogger } from './middleware/logger'
 import { requestTimeoutMiddleware } from './middleware/requestTimeout'
 import {
   rateLimiter,
+  tieredRateLimiter,
   authRateLimiter,
   adminRateLimiter,
   internalRateLimiter,
@@ -100,6 +105,7 @@ import {
   payloadSizeErrorHandler,
   urlencodedBodyParser,
   contentTypeRestrictionMiddleware,
+  validateCorsConfig,
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
@@ -138,6 +144,22 @@ function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
 }
 
+// ── Configuration validation ──────────────────────────────────────────────────
+
+// A production or staging deployment that cannot enforce a CORS allowlist must
+// not start: every browser request would 403, and shipping that as a
+// half-working service is worse than failing loudly at boot (#471).
+try {
+  validateCorsConfig()
+} catch (error) {
+  logger.error(
+    `[CORS] Fatal startup error: ${
+      error instanceof Error ? error.message : String(error)
+    }`
+  )
+  process.exit(1)
+}
+
 // ── Express app ───────────────────────────────────────────────────────────────
 
 const app = express()
@@ -147,6 +169,12 @@ configureTrustProxy(app)
 // ── Security and parsing middleware ───────────────────────────────────────────
 
 app.disable('x-powered-by')
+// Correlation ID — must run first so every response, including early
+// rejections from CORS / body parsing / rate limiting, carries X-Request-ID.
+app.use(correlationIdMiddleware)
+// Standard error envelope — wraps res.json so every later 4xx/5xx response
+// (including CORS, body parsing, auth and rate limiting) shares one shape.
+app.use(errorResponseMiddleware)
 app.use(securityHeaders())
 app.use(permissionsPolicy())
 app.use(corsMiddleware)
@@ -161,9 +189,6 @@ app.use(
 )
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
-
-// Correlation ID — must run before requestLogger
-app.use(correlationIdMiddleware)
 
 // ── User context propagation ──────────────────────────────────────────────────
 //
@@ -187,6 +212,13 @@ app.use((req: Request & { user?: { id: string } }, _res: Response, next) => {
 app.use(requestLogger)
 app.use(trustedIpBypass)
 app.use(rateLimiter)
+// #473 — identity tiering. This single limiter charges anonymous callers to a
+// strict per-IP budget and authenticated callers to a generous per-principal one
+// (see tieredRateLimiter). It resolves identity from the request itself, so it
+// works here, ahead of each route's auth middleware: API keys are self-
+// describing in the Authorization header, and session tokens are classified once
+// the auth middleware has resolved req.userId.
+app.use(tieredRateLimiter)
 app.use(requestTimeoutMiddleware)
 
 // Advertise the served API version on every response — must be registered
@@ -343,6 +375,9 @@ for (const route of apiRoutes) {
 for (const route of apiRoutes) {
   app.use(`/api/${route.path}`, deprecatedApiWarning, ...route.handlers)
 }
+
+// 404 for unmatched routes — after all routers, before the error handlers
+app.use(notFoundHandler)
 
 // 413 handler — must be after body parsers, before generic error handler
 app.use(payloadSizeErrorHandler)

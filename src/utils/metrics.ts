@@ -314,8 +314,8 @@ export const externalServiceErrorsTotal = new client.Counter({
 
 export const rateLimitHitsTotal = new client.Counter({
   name: 'rate_limit_hits_total',
-  help: 'Total number of rate limit hits by route group',
-  labelNames: ['route_group', 'limiter_type'] as const,
+  help: 'Total number of rate limit hits by route group, limiter tier and principal type',
+  labelNames: ['route_group', 'limiter_type', 'principal_type'] as const,
   registers: [register],
 })
 
@@ -529,11 +529,23 @@ export function recordExternalServiceError(
 /**
  * Record a rate limit hit
  */
+/**
+ * Record a request blocked by a rate limiter (#473).
+ *
+ * `principalType` is what makes this alertable: a rise in `anonymous` blocks is
+ * scraping or credential stuffing, while a rise in `authenticated` blocks is a
+ * broken client or a leaked key. Same 429 status, completely different incident.
+ */
 export function recordRateLimitHit(
   routeGroup: string,
-  limiterType: string
+  limiterType: string,
+  principalType: string = 'unknown'
 ): void {
-  rateLimitHitsTotal.inc({ route_group: routeGroup, limiter_type: limiterType })
+  rateLimitHitsTotal.inc({
+    route_group: routeGroup,
+    limiter_type: limiterType,
+    principal_type: principalType,
+  })
 }
 
 /**
@@ -554,10 +566,11 @@ export function updateRateLimitViolations(
 }
 
 /**
- * Record a rejected request due to size or content-type
+ * Record a request rejected before it reached a route handler — oversized
+ * payload, disallowed content type, or a CORS origin failure (#471).
  */
 export function recordRejectedRequest(
-  reason: 'oversized' | 'content_type'
+  reason: 'oversized' | 'content_type' | 'cors_origin' | 'cors_misconfiguration'
 ): void {
   rejectedRequestsTotal.inc({ reason })
 }
