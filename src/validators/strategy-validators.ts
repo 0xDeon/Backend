@@ -192,6 +192,19 @@ export const marketplaceQuerySchema = z.object({
   // those are tuned for WhatsApp transaction lists, not a leaderboard page.
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
+  // Discovery filters (#527) — riskMax/protocols/type/q are additive; an
+  // empty match still returns unfiltered facet counts (see getMarketplace).
+  riskMax: z.coerce.number().int().min(0).max(100).optional(),
+  protocols: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(',').filter(Boolean) : undefined)),
+  type: z.enum(PUBLISHABLE_STRATEGIES).optional(),
+  tags: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(',').filter(Boolean) : undefined)),
+  q: z.string().trim().max(100).optional(),
 })
 
 /**

@@ -40,6 +40,7 @@ import {
   MarketplaceSortField,
   MarketplaceWindow,
 } from '../validators/strategy-validators'
+import { deriveRiskBand, deriveProtocolsTouched } from './marketplaceFacets'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -112,6 +113,11 @@ export interface MarketplaceQueryInput {
   window: MarketplaceWindow
   page: number
   limit: number
+  riskMax?: number
+  protocols?: string[]
+  type?: string
+  tags?: string[]
+  q?: string
 }
 
 /**
@@ -313,23 +319,51 @@ export async function getMarketplace(input: MarketplaceQueryInput): Promise<{
   window: MarketplaceWindow
   sortBy: MarketplaceSortField
   entries: any[]
+  facets: {
+    riskBands: Record<string, number>
+    types: Record<string, number>
+    protocols: Record<string, number>
+  }
 }> {
   const windowDays = WINDOW_DAYS[input.window]
   const skip = (input.page - 1) * input.limit
 
+  // tags/type/q are explicit search inputs, so they narrow both the result
+  // page and the facet baseline. riskMax/protocols are "relax your filters"
+  // targets (#527) — they narrow the result page only, so an empty riskMax
+  // match still returns facet counts a user can act on.
+  const strategyWhere: Record<string, unknown> = { isPublished: true }
+  if (input.tags && input.tags.length > 0) {
+    strategyWhere.tags = { hasSome: input.tags }
+  }
+  if (input.q) {
+    strategyWhere.OR = [
+      { label: { contains: input.q, mode: 'insensitive' } },
+      { description: { contains: input.q, mode: 'insensitive' } },
+    ]
+  }
+
   const where = {
     windowDays,
     isEligible: true,
-    publishedStrategy: { isPublished: true },
+    publishedStrategy: strategyWhere,
   } as const
 
-  const [total, rows] = await Promise.all([
+  // riskMax/protocols/type have no backing column to filter on in SQL
+  // (facets are derived, never stored — see design note below), so those
+  // filters require the full eligible set in JS. Without them, pagination
+  // stays in SQL: the original skip/take/DoS-prevention path is unchanged.
+  const needsJsFilter =
+    input.riskMax != null ||
+    (input.protocols && input.protocols.length > 0) ||
+    !!input.type
+
+  const [total, allRows, facetRows] = await Promise.all([
     db.publishedStrategyMetric.count({ where }),
     db.publishedStrategyMetric.findMany({
       where,
       orderBy: [{ [input.sortBy]: 'desc' }, { computedAt: 'desc' }],
-      skip,
-      take: input.limit,
+      ...(needsJsFilter ? {} : { skip, take: input.limit }),
       select: {
         apy: true,
         sharpe: true,
@@ -340,7 +374,68 @@ export async function getMarketplace(input: MarketplaceQueryInput): Promise<{
         publishedStrategy: { select: marketplaceSelect },
       },
     }),
+    db.publishedStrategyMetric.findMany({
+      where,
+      select: {
+        publishedStrategy: { select: { strategyConfig: true } },
+      },
+    }),
   ])
+
+  const facets = { riskBands: {}, types: {}, protocols: {} } as {
+    riskBands: Record<string, number>
+    types: Record<string, number>
+    protocols: Record<string, number>
+  }
+  for (const row of facetRows) {
+    const cfg = row.publishedStrategy.strategyConfig as {
+      riskCeiling?: number
+      strategyName?: string
+      targetAllocations?: Record<string, number>
+    } | null
+    const band = deriveRiskBand(cfg?.riskCeiling ?? null)
+    facets.riskBands[band] = (facets.riskBands[band] ?? 0) + 1
+    const type = cfg?.strategyName ?? 'UNKNOWN'
+    facets.types[type] = (facets.types[type] ?? 0) + 1
+    for (const protocol of deriveProtocolsTouched(cfg?.targetAllocations)) {
+      facets.protocols[protocol] = (facets.protocols[protocol] ?? 0) + 1
+    }
+  }
+
+  // riskMax/protocols/type filter the already-fetched rows in JS: facets are
+  // derived, not stored columns, so pushing these into SQL would require
+  // materializing them — the staleness risk the design explicitly rules out.
+  // Only paid for when one of these filters is actually present.
+  const jsFiltered = needsJsFilter
+    ? allRows.filter((row) => {
+        const cfg = row.publishedStrategy.strategyConfig as {
+          riskCeiling?: number
+          strategyName?: string
+          targetAllocations?: Record<string, number>
+        } | null
+        if (
+          input.riskMax != null &&
+          (cfg?.riskCeiling ?? Infinity) > input.riskMax
+        ) {
+          return false
+        }
+        if (input.type && cfg?.strategyName !== input.type) {
+          return false
+        }
+        if (input.protocols && input.protocols.length > 0) {
+          const touched = new Set(
+            deriveProtocolsTouched(cfg?.targetAllocations)
+          )
+          if (!input.protocols.some((p) => touched.has(p))) return false
+        }
+        return true
+      })
+    : allRows
+
+  const rows = needsJsFilter
+    ? jsFiltered.slice(skip, skip + input.limit)
+    : allRows
+  const effectiveTotal = needsJsFilter ? jsFiltered.length : total
 
   // vsBenchmark (#320) is read alongside, never sorted on: PublishedStrategyMetric
   // stays the single ORDER BY/skip/take source (the DoS-prevention rationale
@@ -373,10 +468,11 @@ export async function getMarketplace(input: MarketplaceQueryInput): Promise<{
   return {
     page: input.page,
     limit: input.limit,
-    total,
+    total: effectiveTotal,
     window: input.window,
     sortBy: input.sortBy,
     entries,
+    facets,
   }
 }
 
