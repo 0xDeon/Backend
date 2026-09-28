@@ -55,6 +55,8 @@ export class StrategyValidationError extends Error {}
 const marketplaceSelect = {
   id: true,
   label: true,
+  description: true,
+  tags: true,
   strategyConfig: true,
   configVersion: true,
   isPublished: true,
@@ -76,6 +78,33 @@ export const WINDOW_DAYS: Record<MarketplaceWindow, number> = {
 export interface PublishStrategyInput {
   label: string
   strategyConfig?: StrategyConfigShape
+  description?: string
+  tags?: string[]
+}
+
+/**
+ * Rejects any tag not present and active in the curated MarketplaceTag
+ * vocabulary (#527) — publishers pick from this list, never free text, so
+ * search stays clean of tag spam.
+ */
+async function validateTags(
+  tags: string[] | undefined,
+  database: Db
+): Promise<void> {
+  if (!tags || tags.length === 0) return
+
+  const active = await (database as typeof db).marketplaceTag.findMany({
+    where: { slug: { in: tags }, isActive: true },
+    select: { slug: true },
+  })
+  const activeSlugs = new Set(active.map((t) => t.slug))
+  const invalid = tags.filter((t) => !activeSlugs.has(t))
+
+  if (invalid.length > 0) {
+    throw new StrategyValidationError(
+      `Unknown or inactive tag(s): ${invalid.join(', ')}`
+    )
+  }
 }
 
 export interface MarketplaceQueryInput {
@@ -149,6 +178,7 @@ export async function publishStrategy(
     input.strategyConfig,
     db
   )
+  await validateTags(input.tags, db)
   const now = new Date()
 
   const existing = await db.publishedStrategy.findUnique({
@@ -173,6 +203,8 @@ export async function publishStrategy(
       create: {
         userId,
         label: input.label,
+        description: input.description,
+        tags: input.tags ?? [],
         strategyConfig: config as Prisma.InputJsonValue,
         configVersion: 1,
         isPublished: true,
@@ -180,6 +212,8 @@ export async function publishStrategy(
       },
       update: {
         label: input.label,
+        description: input.description,
+        tags: input.tags ?? [],
         strategyConfig: config as Prisma.InputJsonValue,
         configVersion: nextVersion,
         isPublished: true,
